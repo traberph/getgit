@@ -1,10 +1,10 @@
 name: "default"
 
 repos:
-  - name: "k9s"
-    url: "derailed/k9s.git"
+  - name: "getgit"
+    url: "traberph/getgit"
     build: "make build"
-    executable: "bin/k9s"
+    executable: "bin/getgit"
     
     
 

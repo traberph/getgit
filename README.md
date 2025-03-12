@@ -1,12 +1,11 @@
 # GetGit
 
-GetGit is a command-line tool for managing Git repositories. It allows you to install, update, and remove tools directly from Git repositories, with support for both release and edge versions.
+GetGit is a command-line tool for managing tools not present in os package managers.  
+It allows you to install, update, and remove tools directly from Git repositories.
 
 ## Installation
 
-GetGit is configured in `~/.config/getgit`. The `sources.d` folder contains files describing Git repositories and their installation instructions.
-
-The root folder for installed tools is specified in `~/.config/getgit/config.yaml`.
+TODO
 
 ## Commands
 
@@ -64,12 +63,6 @@ Usage: `getgit uninstall <tool>`
 
 Removes the tool's files, aliases, and configuration.
 
-### completion
-Generates shell completion scripts.
-
-Usage: `getgit completion [bash|zsh|fish|powershell]`
-
-Generates completion scripts for the specified shell.
 
 ## Configuration
 
@@ -79,6 +72,7 @@ Source files are located in `~/.config/getgit/sources.d` and contain tool defini
 - Build commands
 - Executable paths
 - Load commands
+For more details check out the default source files.
 
 ### Tool Installation
 When installing a tool, GetGit:
@@ -93,10 +87,3 @@ GetGit maintains an `.alias` file in the root directory that contains:
 - Command aliases for installed tools
 - Source commands for tools that require environment setup
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 

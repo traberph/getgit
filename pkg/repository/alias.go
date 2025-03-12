@@ -79,9 +79,18 @@ func (am *AliasManager) loadAliases() error {
 
 		// Parse "source /path/to/.getgit"
 		if strings.HasPrefix(line, "source ") {
-			path := strings.Trim(strings.TrimPrefix(line, "source "), "\"'")
-			// Extract tool name from path
-			toolName := filepath.Base(filepath.Dir(path))
+			// Split the line into source command and comment
+			parts := strings.SplitN(strings.TrimPrefix(line, "source "), "#", 2)
+			path := strings.Trim(strings.TrimSpace(parts[0]), "\"'")
+
+			// Get tool name from comment if available, otherwise from path
+			var toolName string
+			if len(parts) > 1 {
+				toolName = strings.TrimSpace(parts[1])
+			} else {
+				toolName = filepath.Base(filepath.Dir(path))
+			}
+
 			am.sources[toolName] = path
 		}
 	}
@@ -105,27 +114,34 @@ func (am *AliasManager) AddSource(name, getgitFile string) error {
 
 	// Only add source if there's a load command
 	if gf != nil && gf.LoadCommand != "" {
-		// Process template variables in the load command
-		tmpl, err := template.New("load").Parse(gf.LoadCommand)
-		if err != nil {
-			return fmt.Errorf("failed to parse load command template: %w", err)
-		}
+		loadCommand := gf.LoadCommand
 
-		data := struct {
-			GetGit struct {
-				Root string
+		// Only process template if it contains template variables
+		if strings.Contains(loadCommand, "{{") {
+			// Process template variables in the load command
+			tmpl, err := template.New("load").Parse(loadCommand)
+			if err != nil {
+				return fmt.Errorf("failed to parse load command template: %w", err)
 			}
-		}{
-			GetGit: struct {
-				Root string
-			}{
-				Root: am.workDir,
-			},
-		}
 
-		var processedCmd strings.Builder
-		if err := tmpl.Execute(&processedCmd, data); err != nil {
-			return fmt.Errorf("failed to process load command template: %w", err)
+			data := struct {
+				GetGit struct {
+					Root string
+				}
+			}{
+				GetGit: struct {
+					Root string
+				}{
+					Root: am.workDir,
+				},
+			}
+
+			var processedCmd strings.Builder
+			if err := tmpl.Execute(&processedCmd, data); err != nil {
+				return fmt.Errorf("failed to process load command template: %w", err)
+			}
+
+			loadCommand = processedCmd.String()
 		}
 
 		am.sources[name] = getgitFile
@@ -165,8 +181,8 @@ func (am *AliasManager) saveAliases() error {
 	}
 
 	// Write source lines
-	for _, path := range am.sources {
-		fmt.Fprintf(file, "source \"%s\"\n", path)
+	for name, path := range am.sources {
+		fmt.Fprintf(file, "source \"%s\" # %s\n", path, name)
 	}
 
 	return nil

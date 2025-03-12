@@ -13,6 +13,9 @@ const (
 	SourcesDirName = "sources.d"
 )
 
+// getwd is a variable that can be overridden in tests
+var getwd = os.Getwd
+
 type Config struct {
 	Root string `yaml:"root"`
 }
@@ -89,7 +92,7 @@ func LoadConfig() (*Config, error) {
 		}
 		// Config file doesn't exist, create a default one
 		// Get the current working directory
-		cwd, err := os.Getwd()
+		cwd, err := getwd()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get current directory: %w", err)
 		}

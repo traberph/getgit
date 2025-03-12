@@ -236,7 +236,7 @@ Flags:
 
 		// If index-only flag is set, just update the index and return
 		if indexOnly {
-			fmt.Println("Starting index update...\n")
+			fmt.Println("Starting index update...")
 			indexManager, err := index.NewManager()
 			if err != nil {
 				return fmt.Errorf("failed to initialize index manager: %w", err)
@@ -260,7 +260,7 @@ Flags:
 
 		// If no specific tool is specified, update all sources and list them
 		if len(args) == 0 {
-			fmt.Println("Starting source updates...\n")
+			fmt.Println("Starting source updates...")
 			for i := range sm.Sources {
 				if err := updateSource(sm, &sm.Sources[i]); err != nil {
 					fmt.Printf("Error updating source '%s': %v\n", sm.Sources[i].Name, err)
