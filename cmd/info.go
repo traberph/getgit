@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -12,7 +13,17 @@ import (
 	"github.com/traberph/getgit/pkg/index"
 )
 
-var installedOnly bool
+const (
+	colorGreen  = "\033[32m"
+	colorOrange = "\033[31m"
+	colorReset  = "\033[0m"
+)
+
+var (
+	installedOnly bool
+	veryVerbose   bool
+	correlation   bool
+)
 
 var infoCmd = &cobra.Command{
 	Use:   "info [tool]",
@@ -27,15 +38,18 @@ Examples:
   getgit info toolname # Show details about a specific tool
 
 Flags:
-  --installed, -i  Show only installed tools
-  --verbose, -v   Show all fields (build commands, executables, etc.) instead of just name and URL`,
+  --installed, -i      Show only installed tools
+  --verbose, -v       Show all fields (build commands, executables, etc.) instead of just name and URL
+  --very-verbose, -V  Show all fields including load command
+  --correlation       Show correlation between tools`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runInfo,
 }
 
 func init() {
 	infoCmd.Flags().BoolVarP(&installedOnly, "installed", "i", false, "Show only installed tools")
-	infoCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show all fields instead of just name and URL")
+	infoCmd.Flags().BoolVarP(&veryVerbose, "very-verbose", "V", false, "Show all fields including load command")
+	infoCmd.Flags().BoolVar(&correlation, "correlation", false, "Show correlation between tools")
 
 	// Add completion support
 	infoCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -95,25 +109,55 @@ type repoStatus struct {
 }
 
 func printRepoInfo(w *tabwriter.Writer, repo repoStatus) {
-	fmt.Fprintf(w, "Name:\t%s\n", repo.Name)
-	fmt.Fprintf(w, "Repository URL:\t%s\n", repo.URL)
-	if verbose {
-		fmt.Fprintf(w, "Build Command:\t%s\n", repo.Build)
-		fmt.Fprintf(w, "Executable:\t%s\n", repo.Executable)
-		if repo.Load != "" {
-			fmt.Fprintf(w, "Load Command:\t%s\n", repo.Load)
+	// Helper function to format multi-line values
+	formatMultiLine := func(value string) string {
+		if strings.Contains(value, "\n") {
+			lines := strings.Split(strings.TrimSpace(value), "\n")
+			// First line goes after the tab, subsequent lines are indented
+			for i := range lines {
+				lines[i] = strings.TrimSpace(lines[i])
+			}
+			return lines[0] + "\n\t" + strings.Join(lines[1:], "\n\t")
 		}
-		fmt.Fprintf(w, "Source Name:\t%s\n", repo.SourceName)
-		fmt.Fprintf(w, "Source File:\t%s\n", repo.SourceFile)
+		return strings.TrimSpace(value)
+	}
+
+	// Basic info always shown
+	fmt.Fprintf(w, "name:\t%s\n", repo.Name)
+	fmt.Fprintf(w, "repository url:\t%s\n", repo.URL)
+	if repo.Installed {
+		fmt.Fprintf(w, "status:\t%sinstalled%s\n", colorGreen, colorReset)
+	} else {
+		fmt.Fprintf(w, "status:\tnot installed\n")
+	}
+
+	// Additional info with -v
+	if verbose || veryVerbose {
 		if repo.Installed {
-			fmt.Fprintf(w, "Status:\tInstalled\n")
-			fmt.Fprintf(w, "Install Path:\t%s\n", repo.InstallPath)
-			fmt.Fprintf(w, "Update Train:\t%s\n", repo.UpdateTrain)
-		} else {
-			fmt.Fprintf(w, "Status:\tNot installed\n")
+			if repo.UpdateTrain == "edge" {
+				fmt.Fprintf(w, "update train:\t%sedge%s\n", colorOrange, colorReset)
+			} else {
+				fmt.Fprintf(w, "update train:\t%s\n", repo.UpdateTrain)
+			}
 		}
-	} else if repo.Installed {
-		fmt.Fprintf(w, "Status:\tInstalled\n")
+		fmt.Fprintf(w, "source name:\t%s\n", repo.SourceName)
+	}
+
+	// Full info with -V
+	if veryVerbose {
+		if repo.Build != "" {
+			fmt.Fprintf(w, "build command:\t%s\n", formatMultiLine(repo.Build))
+		}
+		if repo.Executable != "" {
+			fmt.Fprintf(w, "executable:\t%s\n", formatMultiLine(repo.Executable))
+		}
+		fmt.Fprintf(w, "source file:\t%s\n", repo.SourceFile)
+		if repo.Installed {
+			fmt.Fprintf(w, "install path:\t%s\n", formatMultiLine(repo.InstallPath))
+		}
+		if repo.Load != "" {
+			fmt.Fprintf(w, "load command:\t%s\n", formatMultiLine(repo.Load))
+		}
 	}
 }
 
@@ -155,7 +199,7 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	}
 
 	// Use tabwriter for aligned output
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.StripEscape)
 	defer w.Flush()
 
 	if len(args) == 0 {
@@ -169,10 +213,41 @@ func runInfo(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("no tools found in the index")
 		}
 
+		// Map to track unique tool names and their actual installation status
+		uniqueTools := make(map[string]repoStatus)
+
 		// Convert to repo status and filter if needed
-		var statusList []repoStatus
 		for _, repo := range repos {
 			status := getRepoStatus(repo, workDir)
+
+			// If tool is installed and there's a conflict (tool already exists in map)
+			if status.Installed {
+				if existing, exists := uniqueTools[repo.Name]; exists {
+					// Check .getgit file to determine which one is actually installed
+					repoPath := filepath.Join(workDir, repo.Name)
+					if getgitFile, err := getgitfile.ReadFromRepo(repoPath); err == nil && getgitFile != nil {
+						// If .getgit file exists, use the source specified in it
+						if getgitFile.SourceName == repo.SourceName {
+							uniqueTools[repo.Name] = status
+						} else if getgitFile.SourceName == existing.SourceName {
+							// Keep existing if it matches .getgit file
+							continue
+						}
+					}
+				} else {
+					uniqueTools[repo.Name] = status
+				}
+			} else if !installedOnly {
+				// For non-installed tools, only add if not showing installed only
+				if _, exists := uniqueTools[repo.Name]; !exists {
+					uniqueTools[repo.Name] = status
+				}
+			}
+		}
+
+		// Convert map to slice for output
+		var statusList []repoStatus
+		for _, status := range uniqueTools {
 			if !installedOnly || status.Installed {
 				statusList = append(statusList, status)
 			}
@@ -190,7 +265,11 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		for i, status := range statusList {
 			printRepoInfo(w, status)
 			if i < len(statusList)-1 {
-				fmt.Fprintf(w, "\n")
+				if veryVerbose {
+					fmt.Fprintf(w, "\n\n")
+				} else {
+					fmt.Fprintf(w, "\n")
+				}
 			}
 		}
 		return nil
@@ -207,10 +286,41 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no information found for tool '%s'", toolName)
 	}
 
+	// Map to track unique tool matches and their actual installation status
+	uniqueTools := make(map[string]repoStatus)
+
 	// Convert to repo status and filter if needed
-	var statusList []repoStatus
 	for _, repo := range repos {
 		status := getRepoStatus(repo, workDir)
+
+		// If tool is installed and there's a conflict
+		if status.Installed {
+			if existing, exists := uniqueTools[repo.Name]; exists {
+				// Check .getgit file to determine which one is actually installed
+				repoPath := filepath.Join(workDir, repo.Name)
+				if getgitFile, err := getgitfile.ReadFromRepo(repoPath); err == nil && getgitFile != nil {
+					// If .getgit file exists, use the source specified in it
+					if getgitFile.SourceName == repo.SourceName {
+						uniqueTools[repo.Name] = status
+					} else if getgitFile.SourceName == existing.SourceName {
+						// Keep existing if it matches .getgit file
+						continue
+					}
+				}
+			} else {
+				uniqueTools[repo.Name] = status
+			}
+		} else if !installedOnly {
+			// For non-installed tools, only add if not showing installed only
+			if _, exists := uniqueTools[repo.Name]; !exists {
+				uniqueTools[repo.Name] = status
+			}
+		}
+	}
+
+	// Convert map to slice for output
+	var statusList []repoStatus
+	for _, status := range uniqueTools {
 		if !installedOnly || status.Installed {
 			statusList = append(statusList, status)
 		}
@@ -230,7 +340,11 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	for i, status := range statusList {
 		printRepoInfo(w, status)
 		if i < len(statusList)-1 {
-			fmt.Fprintf(w, "\n")
+			if veryVerbose {
+				fmt.Fprintf(w, "\n\n")
+			} else {
+				fmt.Fprintf(w, "\n")
+			}
 		}
 	}
 

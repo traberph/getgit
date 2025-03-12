@@ -163,8 +163,11 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 	useEdge := getgitFile != nil && getgitFile.UpdateTrain == "edge"
 
 	// Check for updates
-	hasUpdates, latestVersion, err := checkForUpdates(rm, toolPath, useEdge)
+	hasUpdates, _, err := checkForUpdates(rm, toolPath, useEdge)
 	if err != nil {
+		if strings.Contains(err.Error(), "failed to fetch updates") {
+			return fmt.Errorf("network error while checking for updates: %w", err)
+		}
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
@@ -185,15 +188,14 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 	}); err != nil {
 		if strings.Contains(err.Error(), "build failed:") {
 			return fmt.Errorf("build failed for '%s': %w", toolName, err)
+		} else if strings.Contains(err.Error(), "failed to checkout") {
+			return fmt.Errorf("failed to switch version for '%s': %w", toolName, err)
+		} else if strings.Contains(err.Error(), "failed to write .getgit file") {
+			return fmt.Errorf("failed to update configuration for '%s': %w", toolName, err)
 		}
 		return fmt.Errorf("failed to update '%s': %w", toolName, err)
 	}
 
-	if useEdge {
-		return nil // Success message will be printed by the caller
-	} else if latestVersion != "" {
-		return nil // Success message will be printed by the caller
-	}
 	return nil
 }
 
@@ -242,13 +244,20 @@ func upgradeAllTools(sm *sources.SourceManager, rm *repository.Manager, workDir 
 			continue
 		}
 
+		// Check if tool uses edge updates
+		getgitFile, _ := getgitfile.ReadFromRepo(toolPath)
+		useEdge := getgitFile != nil && getgitFile.UpdateTrain == "edge"
+
 		// Start processing with spinner
 		om.StartStage(fmt.Sprintf("Checking %s (%d/%d)", entry.Name(), updated+skipped+1, total))
 
 		// Try to upgrade the tool
 		err := upgradeSpecificTool(sm, rm, entry.Name(), workDir)
-		om.StopStage() // Always stop the spinner before printing any status
 
+		// Stop spinner and clear line before showing any status
+		om.StopStage()
+
+		// Print appropriate status message
 		if err != nil {
 			if err.Error() == fmt.Sprintf("tool '%s' is already up to date", entry.Name()) {
 				skipped++
@@ -259,18 +268,24 @@ func upgradeAllTools(sm *sources.SourceManager, rm *repository.Manager, workDir 
 			}
 		} else {
 			updated++
+			if useEdge {
+				om.PrintStatus(fmt.Sprintf("%s: updated to latest commit", entry.Name()))
+			} else {
+				om.PrintStatus(fmt.Sprintf("%s: updated successfully", entry.Name()))
+			}
 		}
 	}
 
-	// Print summary
+	// Print summary with a blank line before it
 	if len(errors) > 0 {
 		om.PrintInfo("\nErrors occurred during upgrade:")
 		for _, err := range errors {
 			om.PrintError(err)
 		}
+		om.PrintInfo("") // Add blank line before summary
 	}
 
-	om.PrintInfo(fmt.Sprintf("\nSummary: %d updated, %d skipped, %d failed", updated, skipped, len(errors)))
+	om.PrintInfo(fmt.Sprintf("Summary: %d updated, %d skipped, %d failed", updated, skipped, len(errors)))
 
 	if len(errors) > 0 {
 		return fmt.Errorf("%d tools failed to upgrade", len(errors))
