@@ -1,0 +1,19 @@
+name: "traberph"
+origin: "https://traberph.de/gg"
+
+permissions:
+  - origins: []
+
+repos:
+  - name: "k9s"
+    url: "derailed/k9s"
+    build: "make build"
+    executable: "execs/k9s"
+  - name: "nvm"
+    url: "nvm-sh/nvm"
+    load: |
+      export NVM_DIR="{{ .getgit.root }}/nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 
+      [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+
+
