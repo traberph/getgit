@@ -1,4 +1,5 @@
 name: "default"
+origin: "https://raw.githubusercontent.com/traberph/getgit/refs/heads/main/config/sources.d/default.yaml"
 
 repos:
   - name: "getgit"
