@@ -2,8 +2,8 @@
 
 : <<'EOF'
 sourcefile: default
-updates: edge
+updates: release
+load: ""
 EOF
-
 
 

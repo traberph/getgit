@@ -53,7 +53,9 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 	}
 	defer rm.Close()
 
-	rm.Output.PrintInfo(fmt.Sprintf("Starting installation of '%s'...\n", toolName))
+	// Always show this main info message
+	rm.Output.PrintInfo(fmt.Sprintf("Starting installation of '%s'...", toolName))
+	fmt.Println()
 
 	// Find tool in sources
 	matches := sm.FindRepo(toolName)
@@ -61,38 +63,81 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 		return fmt.Errorf("tool '%s' not found in any source", toolName)
 	}
 
-	// Print matches
-	fmt.Printf("Found %d matches for '%s':\n", len(matches), toolName)
-	for i, match := range matches {
-		fmt.Printf("%d. %s (from %s)\n", i+1, match.Repo.Name, match.Source.GetName())
+	// Show search results in verbose mode
+	if rm.Output.IsVerbose() {
+		rm.Output.PrintStatus(fmt.Sprintf("Found '%s' in %d source(s)", toolName, len(matches)))
 	}
 
 	isExistingInstall := false
 	var getgitFile *getgitfile.GetGitFile
 	var selectedMatch *sources.RepoMatch
+	var repoURL string
 
-	// Check for existing installation using manager
+	// Check for existing installation - technical detail, verbose only
+	if rm.Output.IsVerbose() {
+		rm.Output.StartStage("Checking for existing installation...")
+	}
+
 	isExistingInstall, err = rm.IsToolInstalled(toolName)
 	if err != nil {
+		if rm.Output.IsVerbose() {
+			rm.Output.StopStage()
+		}
 		return fmt.Errorf("failed to check existing installation: %w", err)
 	}
 
+	if rm.Output.IsVerbose() {
+		if isExistingInstall {
+			rm.Output.PrintStatus(fmt.Sprintf("Found existing installation of '%s'", toolName))
+		} else {
+			rm.Output.PrintStatus(fmt.Sprintf("No existing installation found"))
+		}
+	}
+
 	if isExistingInstall {
+		// Reading tool configuration - technical detail, verbose only
+		if rm.Output.IsVerbose() {
+			rm.Output.StartStage("Reading tool configuration...")
+		}
+
 		getgitFile, err = rm.Getgit.Read(toolName)
 		if err != nil && !os.IsNotExist(err) {
+			if rm.Output.IsVerbose() {
+				rm.Output.StopStage()
+			}
 			return fmt.Errorf("failed to read tool configuration: %w", err)
 		}
 
-		// Find matching source if .getgit file exists
+		if rm.Output.IsVerbose() {
+			if getgitFile != nil {
+				rm.Output.PrintStatus("Configuration loaded")
+			} else {
+				rm.Output.PrintStatus("No configuration found")
+			}
+		}
+
+		// Find matching source if .getgit file exists - technical detail, verbose only
 		if getgitFile != nil {
+			if rm.Output.IsVerbose() {
+				rm.Output.StartStage("Finding source...")
+			}
+
 			for _, match := range matches {
 				if match.Source.GetName() == getgitFile.SourceName {
 					selectedMatch = &match
 					break
 				}
 			}
+
 			if selectedMatch == nil {
-				return fmt.Errorf("source '%s' specified in .getgit file no longer contains this tool", getgitFile.SourceName)
+				if rm.Output.IsVerbose() {
+					rm.Output.StopStage()
+				}
+				return fmt.Errorf("source '%s' specified in configuration no longer contains this tool", getgitFile.SourceName)
+			}
+
+			if rm.Output.IsVerbose() {
+				rm.Output.PrintStatus(fmt.Sprintf("Using source: %s", selectedMatch.Source.GetName()))
 			}
 		}
 	}
@@ -101,25 +146,60 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 	if selectedMatch == nil {
 		if len(matches) == 1 {
 			selectedMatch = &matches[0]
+			if rm.Output.IsVerbose() {
+				rm.Output.PrintInfo(fmt.Sprintf("Using source: %s", selectedMatch.Source.GetName()))
+			}
 		} else {
+			// Always show this for multiple sources as it requires user input
+			rm.Output.PrintInfo("Multiple sources found, please select one:")
 			var err error
 			selectedMatch, err = promptSourceSelection(matches)
 			if err != nil {
 				return fmt.Errorf("source selection failed: %w", err)
 			}
+			rm.Output.PrintInfo(fmt.Sprintf("Selected source: %s", selectedMatch.Source.GetName()))
 		}
 	}
 
-	// Validate and normalize URL
-	repoURL, err := sm.NormalizeAndValidateURL(selectedMatch.Repo.URL)
-	if err != nil {
-		return fmt.Errorf("failed to validate URL: %w", err)
+	// Validate URL - technical detail, verbose only
+	if rm.Output.IsVerbose() {
+		rm.Output.StartStage("Validating repository URL...")
+	}
+
+	var urlErr error
+	repoURL, urlErr = sm.NormalizeAndValidateURL(selectedMatch.Repo.URL)
+	if urlErr != nil {
+		if rm.Output.IsVerbose() {
+			rm.Output.StopStage()
+		}
+		return fmt.Errorf("failed to validate URL: %w", urlErr)
 	}
 	selectedMatch.Repo.URL = repoURL
 
-	// Determine update train
+	if rm.Output.IsVerbose() {
+		rm.Output.PrintStatus("URL validated")
+	}
+
+	// Determine update train - technical detail, verbose only
 	newUpdateTrain, _ := rm.Getgit.GetUpdateTrain(toolName, edge, release)
 	useEdgeTrain := newUpdateTrain == getgitfile.UpdateTrainEdge
+
+	// Display update train info early if it's explicitly set via flags
+	if edge || release {
+		if useEdgeTrain {
+			rm.Output.PrintInfo(fmt.Sprintf("Switching '%s' to edge (latest commit)", toolName))
+		} else {
+			rm.Output.PrintInfo(fmt.Sprintf("Switching '%s' to release (latest tag)", toolName))
+		}
+	}
+
+	if rm.Output.IsVerbose() {
+		if useEdgeTrain {
+			rm.Output.PrintInfo("Using edge update train (latest commit)")
+		} else {
+			rm.Output.PrintInfo("Using release update train (latest tag)")
+		}
+	}
 
 	// For existing installations, check if we need to update
 	if isExistingInstall {
@@ -133,22 +213,33 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 		}
 
 		// Show update train change message before any other operations
-		if updateTrainChanged {
-			rm.Output.StopStage() // Stop any existing spinner
+		if updateTrainChanged && !edge && !release {
+			// Show update train changes if not already shown at the top
 			if useEdgeTrain {
 				rm.Output.PrintInfo(fmt.Sprintf("Switching '%s' to edge (latest commit)", toolName))
 			} else {
 				rm.Output.PrintInfo(fmt.Sprintf("Switching '%s' to release (latest tag)", toolName))
 			}
-			rm.Output.PrintInfo("Checking for updates...")
+		}
 
-			// Write .getgit file first
+		if updateTrainChanged {
+			// Write .getgit file first - technical detail, verbose only
+			if rm.Output.IsVerbose() {
+				rm.Output.StartStage("Updating configuration...")
+			}
+
 			if err := rm.Getgit.Write(toolName, selectedMatch.Source.GetName(), newUpdateTrain, selectedMatch.Repo.Load); err != nil {
+				if rm.Output.IsVerbose() {
+					rm.Output.StopStage()
+				}
 				return fmt.Errorf("failed to write tool configuration: %w", err)
 			}
-			rm.Output.PrintStatus("Updated tool configuration")
 
-			// Now update the package
+			if rm.Output.IsVerbose() {
+				rm.Output.PrintStatus("Configuration updated")
+			}
+
+			// Now update the package - always show this
 			if err := rm.UpdatePackage(repository.Repository{
 				Name:       selectedMatch.Repo.Name,
 				URL:        repoURL,
@@ -161,48 +252,95 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 			}); err != nil {
 				return fmt.Errorf("failed to install tool: %w", err)
 			}
-			rm.Output.PrintInfo(fmt.Sprintf("Tool '%s' configuration updated successfully!", toolName))
+
+			// Add empty line before final success message
+			fmt.Println()
+			rm.Output.PrintInfo(fmt.Sprintf("Tool '%s' updated successfully!", toolName))
 			return nil
 		}
 
-		// Check for updates based on the update train
+		// Check for updates - always show this
 		hasUpdates := false
 		var latestTag string
-		var err error
 
 		// Only check for updates if the repository exists and has a .git directory
 		if _, gitErr := os.Stat(filepath.Join(workDir, toolName, ".git")); gitErr == nil {
-			hasUpdates, latestTag, err = checkForUpdates(rm, toolName, useEdgeTrain)
-			if err != nil {
-				return fmt.Errorf("failed to check for updates: %w", err)
+			rm.Output.StartStage("Checking for updates...")
+
+			if useEdgeTrain {
+				// For edge update train, check for new commits
+				hasUpdates, err = rm.HasEdgeUpdates(filepath.Join(workDir, toolName))
+				if err != nil {
+					rm.Output.StopStage()
+					return fmt.Errorf("failed to check for edge updates: %w", err)
+				}
+
+				if hasUpdates {
+					rm.Output.PrintStatus("New updates available")
+				} else {
+					rm.Output.PrintStatus("No updates available")
+				}
+			} else {
+				// For release update train, check for new tags
+				hasTags, err := rm.HasTags(filepath.Join(workDir, toolName))
+				if err != nil {
+					rm.Output.StopStage()
+					return fmt.Errorf("failed to check for tags: %w", err)
+				}
+
+				if hasTags {
+					currentTag, _ := rm.GetCurrentTag(filepath.Join(workDir, toolName))
+					latestTag, err = rm.GetLatestTag(filepath.Join(workDir, toolName))
+					if err != nil {
+						rm.Output.StopStage()
+						return fmt.Errorf("failed to get latest tag: %w", err)
+					}
+
+					if currentTag != latestTag {
+						hasUpdates = true
+						rm.Output.PrintStatus(fmt.Sprintf("New version available: %s", latestTag))
+					} else {
+						rm.Output.PrintStatus("Already at latest version")
+					}
+				} else {
+					rm.Output.PrintStatus("No release tags found")
+				}
 			}
 
 			// Handle case when no updates are needed
 			if !hasUpdates {
+				fmt.Println()
 				rm.Output.PrintInfo(fmt.Sprintf("Tool '%s' is already up to date!", toolName))
 				return nil
 			}
-
-			if !useEdgeTrain && latestTag != "" {
-				rm.Output.PrintInfo(fmt.Sprintf("New version available: %s", latestTag))
-			}
 		}
-	}
-
-	// Update or install the package
-	if !isExistingInstall {
-		// For new installations, first clone the repository
+	} else {
+		// For new installations, first clone the repository - always show this
+		rm.Output.StartStage(fmt.Sprintf("Cloning repository..."))
 		if _, err := rm.CloneOrUpdate(repoURL, toolName); err != nil {
+			rm.Output.StopStage()
 			return fmt.Errorf("failed to clone repository: %w", err)
 		}
+		rm.Output.PrintStatus("Repository cloned")
 
-		// Write .getgit file
+		// Write .getgit file - technical detail, verbose only
+		if rm.Output.IsVerbose() {
+			rm.Output.StartStage("Creating configuration...")
+		}
+
 		if err := rm.Getgit.Write(toolName, selectedMatch.Source.GetName(), newUpdateTrain, selectedMatch.Repo.Load); err != nil {
+			if rm.Output.IsVerbose() {
+				rm.Output.StopStage()
+			}
 			return fmt.Errorf("failed to write tool configuration: %w", err)
+		}
+
+		if rm.Output.IsVerbose() {
+			rm.Output.PrintStatus("Configuration created")
 		}
 	}
 
-	// Now update the package (this will handle building and setting up the tool)
+	// Now update the package - always show this
 	if err := rm.UpdatePackage(repository.Repository{
 		Name:       selectedMatch.Repo.Name,
 		URL:        repoURL,
@@ -216,16 +354,21 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 		return fmt.Errorf("failed to install tool: %w", err)
 	}
 
-	// Only update completion script for new installations
+	// Only update completion script for new installations - always show this
 	if !isExistingInstall {
+		rm.Output.StartStage("Updating shell completion...")
 		if err := shell.UpdateCompletionScript(cmd); err != nil {
+			rm.Output.StopStage()
 			rm.Output.PrintError(fmt.Sprintf("Warning: Failed to update completion script: %v", err))
 		} else {
-			rm.Output.PrintStatus("Updated shell completion")
+			rm.Output.PrintStatus("Shell completion updated")
 		}
 	}
 
-	rm.Output.PrintInfo(fmt.Sprintf("\nInstallation of '%s' completed successfully!", toolName))
+	// Add empty line before final success message
+	fmt.Println()
+	// Final success message - always show this
+	rm.Output.PrintInfo(fmt.Sprintf("Installation of '%s' completed successfully!", toolName))
 	return nil
 }
 

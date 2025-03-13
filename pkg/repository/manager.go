@@ -254,11 +254,6 @@ func (m *Manager) CloneOrUpdate(repoURL, name string) (string, error) {
 
 // UpdatePackage updates a specific tool
 func (m *Manager) UpdatePackage(repo Repository) error {
-	// Start spinner only if not in verbose mode and not already running
-	if !m.Output.IsVerbose() && !m.Output.IsSpinnerRunning() {
-		m.Output.StartStage("Checking for updates...")
-	}
-
 	// Get the repository path
 	repoPath := filepath.Join(m.workDir, repo.Name)
 	gitOps := NewGitOps(repoPath, m.Output)
@@ -271,7 +266,7 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 		}
 	}
 
-	// Get current state
+	// Get current state - this should be silent, no need for spinner
 	currentRef, err := m.GetRepoState(repoPath)
 	if err != nil {
 		return &ManagerError{
@@ -280,7 +275,7 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 		}
 	}
 
-	// Update repository based on update train
+	// Update repository based on update train - always show this
 	m.Output.StartStage("Updating repository...")
 	if err := gitOps.UpdateRepo(repo.UseEdge); err != nil {
 		m.Output.StopStage()
@@ -290,9 +285,10 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 		}
 	}
 
-	// Get new state
+	// Get new state - silent operation
 	newRef, err := m.GetRepoState(repoPath)
 	if err != nil {
+		m.Output.StopStage()
 		return &ManagerError{
 			Op:  "update",
 			Err: fmt.Errorf("failed to get new state: %w", err),
@@ -301,21 +297,24 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 
 	// If refs are different, we need to rebuild
 	if currentRef != newRef {
+		// Always show update information
 		if repo.UseEdge {
-			m.Output.PrintStatus(fmt.Sprintf("Repository updated to latest commit: %s", newRef))
+			shortRef := newRef
+			if len(shortRef) > 8 {
+				shortRef = shortRef[:8] // Show only first 8 chars of commit hash
+			}
+			m.Output.PrintStatus(fmt.Sprintf("Updated to latest commit (%s)", shortRef))
 		} else {
 			// For release mode, verify we're on a tag
 			tag, err := gitOps.GetCurrentTag()
 			if err != nil {
-				return &ManagerError{
-					Op:  "update",
-					Err: fmt.Errorf("failed to get current tag: %w", err),
-				}
+				tag = "latest version"
 			}
-			m.Output.PrintStatus(fmt.Sprintf("Repository updated to tag: %s", tag))
+			m.Output.PrintStatus(fmt.Sprintf("Updated to %s", tag))
 		}
 
 		if !repo.SkipBuild {
+			// Always show build progress
 			m.Output.StartStage(fmt.Sprintf("Building %s...", repo.Name))
 			if err := m.buildTool(repo); err != nil {
 				m.Output.StopStage()
@@ -324,16 +323,16 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 					Err: fmt.Errorf("failed to build tool: %w", err),
 				}
 			}
-			m.Output.PrintStatus("Build completed")
+			m.Output.PrintStatus("Build successful")
 		}
 	} else {
-		m.Output.StopStage()
-		m.Output.PrintInfo(fmt.Sprintf("Tool '%s' is already up to date!", repo.Name))
+		// No changes detected
+		m.Output.PrintStatus("Already at latest version")
 	}
 
-	// Create or update alias for the tool
+	// Create or update alias for the tool - this is important but technical
 	if repo.Executable != "" {
-		m.Output.StartStage("Updating alias...")
+		m.Output.StartStage("Setting up command...")
 		execPath := filepath.Join(repoPath, repo.Executable)
 		if err := m.Load.AddAlias(repo.Name, execPath); err != nil {
 			m.Output.StopStage()
@@ -342,15 +341,29 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 				Err: fmt.Errorf("failed to create alias: %w", err),
 			}
 		}
-		m.Output.PrintStatus("Updated alias")
+		m.Output.PrintStatus("Command setup complete")
 	}
 
-	// Add source command if tool has a .getgit file
-	getgitPath := m.Getgit.GetFilePath(repo.Name)
-	if err := m.Load.AddSource(repo.Name, getgitPath); err != nil {
-		return &ManagerError{
-			Op:  "source",
-			Err: fmt.Errorf("failed to add source command: %w", err),
+	// Add source command if tool has a .getgit file - technical detail, could be verbose-only
+	if m.Output.IsVerbose() {
+		m.Output.StartStage("Updating environment hooks...")
+		getgitPath := m.Getgit.GetFilePath(repo.Name)
+		if err := m.Load.AddSource(repo.Name, getgitPath); err != nil {
+			m.Output.StopStage()
+			return &ManagerError{
+				Op:  "source",
+				Err: fmt.Errorf("failed to add source command: %w", err),
+			}
+		}
+		m.Output.PrintStatus("Environment hooks updated")
+	} else {
+		// Still do the operation but don't show spinner
+		getgitPath := m.Getgit.GetFilePath(repo.Name)
+		if err := m.Load.AddSource(repo.Name, getgitPath); err != nil {
+			return &ManagerError{
+				Op:  "source",
+				Err: fmt.Errorf("failed to add source command: %w", err),
+			}
 		}
 	}
 
