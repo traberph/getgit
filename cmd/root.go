@@ -8,8 +8,7 @@ import (
 
 // Common flags used across commands
 var (
-	verbose   bool
-	skipBuild bool
+	verbose bool
 )
 
 var rootCmd = &cobra.Command{
@@ -48,9 +47,4 @@ func init() {
 	// will be global for your application.
 
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed output")
-	rootCmd.PersistentFlags().BoolVarP(&skipBuild, "skip-build", "s", false, "Skip building the tool after update")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

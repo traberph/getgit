@@ -20,7 +20,6 @@ const (
 var (
 	installedOnly bool
 	veryVerbose   bool
-	correlation   bool
 )
 
 var infoCmd = &cobra.Command{
@@ -38,8 +37,7 @@ Examples:
 Flags:
   --installed, -i      Show only installed tools
   --verbose, -v       Show all fields (build commands, executables, etc.) instead of just name and URL
-  --very-verbose, -V  Show all fields including load command
-  --correlation       Show correlation between tools`,
+  --very-verbose, -V  Show all fields including load command`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runInfo,
 }
@@ -47,7 +45,6 @@ Flags:
 func init() {
 	infoCmd.Flags().BoolVarP(&installedOnly, "installed", "i", false, "Show only installed tools")
 	infoCmd.Flags().BoolVarP(&veryVerbose, "very-verbose", "V", false, "Show all fields including load command")
-	infoCmd.Flags().BoolVar(&correlation, "correlation", false, "Show correlation between tools")
 
 	// Add completion support
 	infoCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

@@ -10,7 +10,7 @@ It allows you to install, update, and remove tools directly from Git repositorie
 
 ## Installation
 
-Reqirements: `make` and  `golang`  
+Requirements: `make` and  `golang`  
 Installation: 
 ```
 mkdir tools & cd tools
@@ -25,14 +25,14 @@ Make sure to source your `.bashrc` again since getgit uses aliases
 ### update
 Updates the tool sources and index database.
 
-Usage: `getgit update [tool]`
+Usage: `getgit update`
 
-Without arguments, updates all source files and rebuilds the tool index. With a tool name, updates that specific tool.
+Updates all source files and rebuilds the tool index. This command does not update individual tools - use 'getgit upgrade' for that purpose.
 
 Flags:
 - `--force, -f`: Skip user approval for changes
 - `--dry-run, -d`: Show changes without applying them
-- `--index-only, -i`: Only rebuild the tool index without fetching updates (can be used if sourcefiles are localy maintained and updated)
+- `--index-only, -i`: Only rebuild the tool index without fetching updates (can be used if source files are locally maintained and updated)
 
 ### info
 Displays information about available or installed tools.
@@ -44,6 +44,7 @@ Without arguments, lists all available tools. With a tool name, shows detailed i
 Flags:
 - `--installed, -i`: Show only installed tools
 - `--verbose, -v`: Show all fields (build commands, executables, etc.) instead of just name and URL
+- `--very-verbose, -V`: Show all fields including load command
 
 ### install
 Installs a tool from a Git repository.
@@ -88,16 +89,52 @@ Source files are located in `~/.config/getgit/sources.d` and contain tool defini
 - Load commands
 For more details check out the default source files.
 
+## Technical Background
+
 ### Tool Installation
 When installing a tool, GetGit:
-1. Clones the repository
+1. Clones the repository into the tools directory (parent of getgits own location)
 2. Checks out the appropriate version (release tag or latest commit)
 3. Runs the build command if specified
 4. Creates necessary aliases
 5. Sets up load commands if required
+6. Creates a `.getgit` file to track installation metadata
 
-### Aliases
-GetGit maintains an `.alias` file in the root directory that contains:
+### .getgit Files
+The `.getgit` file serves two important purposes:
+1. Storing metadata about the tool installation in a YAML format within a heredoc section:
+   - `sourcefile`: The name of the source file that defined this tool
+   - `updates`: The update train ("release" or "edge")
+2. Containing any shell commands needed to load the tool environment
+
+A `.getgit` file looks like:
+```bash
+#!/bin/bash
+
+: <<'EOF'
+sourcefile: default
+updates: edge
+EOF
+
+export SOME_VARIABLE=""
+source some_script.sh
+```
+
+### Load Commands
+GetGit maintains a `.load` file in the root directory that contains:
 - Command aliases for installed tools
 - Source commands for tools that require environment setup
+
+This file is automatically sourced by your shell when you start a new session, making all installed tools immediately available.
+
+### Name Conflict Resolution
+When a tool exists in multiple sources:
+1. During installation, you'll be prompted to select which source to use
+2. During upgrade, the system uses the source recorded in the tool's `.getgit` file
+3. If the `.getgit` file is missing during upgrade, you'll be prompted to select a source again
+
+### Tool Dependencies
+GetGit focuses on standalone tools, but if a tool has dependencies:
+- System dependencies should be installed separately using your OS package manager
+- Dependencies between GetGit-managed tools can be handled by installing the required tools first
 

@@ -11,9 +11,11 @@ import (
 	"github.com/traberph/getgit/pkg/getgitfile"
 	"github.com/traberph/getgit/pkg/repository"
 	"github.com/traberph/getgit/pkg/sources"
+	"github.com/traberph/getgit/pkg/utils"
 )
 
-var force bool // Force upgrade without confirmation
+// verbose is a persistent flag defined in root.go
+var upgradeSkipBuild bool // Skip building the tool after upgrade
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade [tool]",
@@ -25,11 +27,7 @@ With a tool name, upgrades only that specific tool.
 
 Examples:
   getgit upgrade         # Upgrade all installed tools
-  getgit upgrade k9s    # Upgrade only k9s
-
-Flags:
-  --skip-build, -s  Skip the build step after updating
-  --verbose, -v    Show detailed output during upgrade`,
+  getgit upgrade k9s    # Upgrade only k9s`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Get work directory
 		workDir, err := config.GetWorkDir()
@@ -65,7 +63,7 @@ Flags:
 }
 
 func init() {
-	upgradeCmd.Flags().BoolVarP(&force, "force", "f", false, "Force upgrade without confirmation")
+	upgradeCmd.Flags().BoolVarP(&upgradeSkipBuild, "skip-build", "s", false, "Skip building the tool after upgrade")
 	rootCmd.AddCommand(upgradeCmd)
 }
 
@@ -149,7 +147,7 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 	} else {
 		// If multiple matches and no .getgit file, prompt user to select one
 		var err error
-		selectedMatch, err = promptSourceSelection(matches)
+		selectedMatch, err = utils.PromptSourceSelection(matches)
 		if err != nil {
 			return fmt.Errorf("source selection failed: %w", err)
 		}
@@ -185,7 +183,7 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 		Executable: selectedMatch.Repo.Executable,
 		Load:       selectedMatch.Repo.Load,
 		UseEdge:    useEdge,
-		SkipBuild:  skipBuild,
+		SkipBuild:  upgradeSkipBuild,
 		SourceName: selectedMatch.Source.GetName(),
 	}); err != nil {
 		if strings.Contains(err.Error(), "build failed:") {
@@ -252,14 +250,20 @@ func upgradeAllTools(sm *sources.SourceManager, rm *repository.Manager, workDir 
 		}
 
 		// Check if tool uses edge updates
-		getgitFile, _ := getgitfile.ReadFromRepo(toolPath)
+		getgitFile, err := getgitfile.ReadFromRepo(toolPath)
+		if err != nil && !os.IsNotExist(err) {
+			errors = append(errors, fmt.Sprintf("%s: failed to read .getgit file - %v", entry.Name(), err))
+			om.PrintError(fmt.Sprintf("%s: failed to read .getgit file - %v", entry.Name(), err))
+			continue
+		}
+
 		useEdge := getgitFile != nil && getgitFile.UpdateTrain == "edge"
 
 		// Start processing with spinner
 		om.StartStage(fmt.Sprintf("Checking %s (%d/%d)", entry.Name(), updated+skipped+1, total))
 
 		// Try to upgrade the tool
-		err := upgradeSpecificTool(sm, rm, entry.Name(), workDir)
+		err = upgradeSpecificTool(sm, rm, entry.Name(), workDir)
 
 		// Stop spinner and clear line before showing any status
 		om.StopStage()

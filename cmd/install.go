@@ -11,32 +11,16 @@ import (
 	"github.com/traberph/getgit/pkg/repository"
 	"github.com/traberph/getgit/pkg/shell"
 	"github.com/traberph/getgit/pkg/sources"
+	"github.com/traberph/getgit/pkg/utils"
 )
 
 var (
-	release bool
-	edge    bool // Use edge update train
+	release          bool
+	edge             bool // Use edge update train
+	installSkipBuild bool // Skip building the tool after installation
 )
 
-// promptSourceSelection prompts the user to select a source from multiple matches
-func promptSourceSelection(matches []sources.RepoMatch) (*sources.RepoMatch, error) {
-	fmt.Printf("\nTool found in multiple sources. Please select one:\n")
-	for i, match := range matches {
-		fmt.Printf("%d) %s (from source: %s)\n", i+1, match.Repo.Name, match.Source.GetName())
-		fmt.Printf("   URL: %s\n", match.Repo.URL)
-		fmt.Printf("   Build command: %s\n", match.Repo.Build)
-		fmt.Printf("   Executable: %s\n\n", match.Repo.Executable)
-	}
-
-	var selection int
-	fmt.Print("Enter number (1-" + fmt.Sprint(len(matches)) + "): ")
-	_, err := fmt.Scanf("%d", &selection)
-	if err != nil || selection < 1 || selection > len(matches) {
-		return nil, fmt.Errorf("invalid selection")
-	}
-
-	return &matches[selection-1], nil
-}
+// verbose is a persistent flag defined in root.go
 
 // installTool handles the installation of a tool
 func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command) error {
@@ -153,7 +137,7 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 			// Always show this for multiple sources as it requires user input
 			rm.Output.PrintInfo("Multiple sources found, please select one:")
 			var err error
-			selectedMatch, err = promptSourceSelection(matches)
+			selectedMatch, err = utils.PromptSourceSelection(matches)
 			if err != nil {
 				return fmt.Errorf("source selection failed: %w", err)
 			}
@@ -247,7 +231,7 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 				Executable: selectedMatch.Repo.Executable,
 				Load:       selectedMatch.Repo.Load,
 				UseEdge:    useEdgeTrain,
-				SkipBuild:  skipBuild,
+				SkipBuild:  installSkipBuild,
 				SourceName: selectedMatch.Source.GetName(),
 			}); err != nil {
 				return fmt.Errorf("failed to install tool: %w", err)
@@ -348,7 +332,7 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 		Executable: selectedMatch.Repo.Executable,
 		Load:       selectedMatch.Repo.Load,
 		UseEdge:    useEdgeTrain,
-		SkipBuild:  skipBuild,
+		SkipBuild:  installSkipBuild,
 		SourceName: selectedMatch.Source.GetName(),
 	}); err != nil {
 		return fmt.Errorf("failed to install tool: %w", err)
@@ -425,6 +409,7 @@ Flags:
 func init() {
 	installCmd.Flags().BoolVarP(&release, "release", "r", false, "Install the latest tagged release")
 	installCmd.Flags().BoolVarP(&edge, "edge", "e", false, "Use edge update train")
+	installCmd.Flags().BoolVarP(&installSkipBuild, "skip-build", "s", false, "Skip building the tool after installation")
 
 	// Add completion support
 	installCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
