@@ -63,8 +63,10 @@ Flags:
 }
 
 func init() {
-	rootCmd.AddCommand(upgradeCmd)
+	upgradeCmd.Flags().BoolVarP(&force, "force", "f", false, "Force upgrade without confirmation")
+	upgradeCmd.Flags().BoolVarP(&edge, "edge", "e", false, "Upgrade to the latest commit from the main branch")
 	upgradeCmd.Flags().BoolVarP(&skipBuild, "skip-build", "s", false, "Skip the build step after updating")
+	rootCmd.AddCommand(upgradeCmd)
 }
 
 // checkForUpdates checks if there are updates available for a repository
@@ -154,7 +156,7 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 
 		// Create .getgit file for future reference
 		updateTrain := "release"
-		if err := getgitfile.WriteToRepo(toolPath, selectedMatch.Source.Name, updateTrain, nil, selectedMatch.Repo.Load); err != nil {
+		if err := getgitfile.WriteToRepo(toolPath, selectedMatch.Source.Name, updateTrain, selectedMatch.Repo.Load); err != nil {
 			return fmt.Errorf("failed to write .getgit file: %w", err)
 		}
 	}

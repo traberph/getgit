@@ -5,14 +5,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/briandowns/spinner"
 	"github.com/traberph/getgit/pkg/config"
 	"github.com/traberph/getgit/pkg/getgitfile"
+	"github.com/traberph/getgit/pkg/load"
+	"github.com/traberph/getgit/pkg/sources"
+)
+
+const (
+	colorGreen  = "\033[32m"
+	colorOrange = "\033[31m"
+	colorReset  = "\033[0m"
 )
 
 // OutputManager handles command output and progress indication
@@ -32,9 +40,29 @@ func NewOutputManager(verbose bool) *OutputManager {
 	}
 }
 
+// IsVerbose returns the current verbose setting
+func (om *OutputManager) IsVerbose() bool {
+	om.mu.Lock()
+	defer om.mu.Unlock()
+	return om.verbose
+}
+
+// SetVerbose sets the verbose mode
+func (om *OutputManager) SetVerbose(verbose bool) {
+	om.mu.Lock()
+	defer om.mu.Unlock()
+	om.verbose = verbose
+}
+
 // StartStage starts a new stage with the given message
 func (om *OutputManager) StartStage(message string) {
+	om.mu.Lock()
+	defer om.mu.Unlock()
+
 	if !om.verbose {
+		if om.spinner.Active() {
+			om.spinner.Stop()
+		}
 		om.spinner.Suffix = fmt.Sprintf(" %s", message)
 		om.spinner.Start()
 	} else {
@@ -44,15 +72,25 @@ func (om *OutputManager) StartStage(message string) {
 
 // CompleteStage marks the current stage as completed
 func (om *OutputManager) CompleteStage() {
+	om.mu.Lock()
+	defer om.mu.Unlock()
+
 	if !om.verbose {
-		om.spinner.Stop()
+		if om.spinner.Active() {
+			om.spinner.Stop()
+		}
 	}
 }
 
 // StopStage stops the current stage without printing completion
 func (om *OutputManager) StopStage() {
+	om.mu.Lock()
+	defer om.mu.Unlock()
+
 	if !om.verbose {
-		om.spinner.Stop()
+		if om.spinner.Active() {
+			om.spinner.Stop()
+		}
 		// Clear the line
 		fmt.Fprint(os.Stderr, "\r\033[K")
 	}
@@ -89,11 +127,22 @@ func (om *OutputManager) PrintInfo(message string) {
 	fmt.Fprintf(os.Stderr, "%s\n", message)
 }
 
+// ManagerError represents an error that occurred in the repository manager
+type ManagerError struct {
+	Op  string
+	Err error
+}
+
+func (e *ManagerError) Error() string {
+	return fmt.Sprintf("manager error: %s: %v", e.Op, e.Err)
+}
+
 // Manager handles Git repository operations and tool management
 type Manager struct {
 	workDir string
 	Output  *OutputManager
-	aliases *AliasManager
+	load    *load.LoadManager
+	Getgit  *getgitfile.Manager // Expose getgitfile manager
 }
 
 // NewManager creates a new repository manager instance
@@ -101,211 +150,207 @@ func NewManager(workDir string, verbose bool) (*Manager, error) {
 	// Load the config to get the base folder
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
+		return nil, &ManagerError{
+			Op:  "init",
+			Err: fmt.Errorf("failed to load config: %w", err),
+		}
 	}
 
-	// Use the configured root directory
-	workDir = cfg.Root
+	// Use workDir if provided, otherwise use config root
+	if workDir == "" {
+		workDir = cfg.Root
+	}
 
 	if err := os.MkdirAll(workDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create work directory: %w", err)
+		return nil, &ManagerError{
+			Op:  "init",
+			Err: fmt.Errorf("failed to create work directory: %w", err),
+		}
 	}
 
-	// Create alias manager
-	aliasManager, err := NewAliasManager()
+	// Create load manager
+	loadManager, err := load.NewLoadManager()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create alias manager: %w", err)
+		return nil, &ManagerError{
+			Op:  "init",
+			Err: fmt.Errorf("failed to create load manager: %w", err),
+		}
+	}
+
+	// Create getgitfile manager
+	getgitManager, err := getgitfile.NewManager(workDir)
+	if err != nil {
+		return nil, &ManagerError{
+			Op:  "init",
+			Err: fmt.Errorf("failed to create getgitfile manager: %w", err),
+		}
+	}
+
+	// Ensure load file exists with correct header
+	if err := loadManager.EnsureLoadFile(); err != nil {
+		return nil, &ManagerError{
+			Op:  "init",
+			Err: fmt.Errorf("failed to ensure load file: %w", err),
+		}
 	}
 
 	return &Manager{
 		workDir: workDir,
 		Output:  NewOutputManager(verbose),
-		aliases: aliasManager,
+		load:    loadManager,
+		Getgit:  getgitManager,
 	}, nil
-}
-
-// getDefaultBranch gets the default branch name from the repository
-func (m *Manager) getDefaultBranch(repoPath string) (string, error) {
-	// First try to get the symbolic ref of HEAD
-	cmd := exec.Command("git", "symbolic-ref", "--short", "HEAD")
-	cmd.Dir = repoPath
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return strings.TrimSpace(string(output)), nil
-	}
-
-	// If that fails, try to get it from the remote
-	cmd = exec.Command("git", "remote", "show", "origin")
-	cmd.Dir = repoPath
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to get remote info: %s", output)
-	}
-
-	// Parse the output to find the default branch
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "HEAD branch:") {
-			parts := strings.Split(line, ":")
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1]), nil
-			}
-		}
-	}
-
-	return "main", nil // Default to main if we can't determine it
 }
 
 // CloneOrUpdate either clones a new repository or updates an existing one
 func (m *Manager) CloneOrUpdate(repoURL, name string) (string, error) {
 	repoPath := filepath.Join(m.workDir, name)
+	gitOps := NewGitOps(repoPath, m.Output)
 
 	// Check if repository already exists
 	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
 		// Repository exists, update it
-		m.Output.StartStage("Updating repository")
+		if err := gitOps.FetchUpdates(); err != nil {
+			return "", err
+		}
 
-		// Get current branch or tag
-		cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-		cmd.Dir = repoPath
-		output, err := cmd.CombinedOutput()
-		currentRef := strings.TrimSpace(string(output))
+		// Get current ref
+		currentRef, err := gitOps.GetCurrentRef()
+		if err != nil {
+			return "", fmt.Errorf("failed to get current ref: %w", err)
+		}
+
+		// Check if we're in detached HEAD state
 		isDetached := currentRef == "HEAD"
 
 		if isDetached {
 			// We're in detached HEAD state (probably on a tag)
-			// Fetch updates
-			cmd = exec.Command("git", "fetch", "origin")
-			cmd.Dir = repoPath
-			output, err = cmd.CombinedOutput()
-			if err != nil {
-				m.Output.StopStage()
-				return "", fmt.Errorf("failed to fetch updates: %s", output)
-			}
-			m.Output.AddOutput(string(output))
-		} else {
-			// We're on a branch, get the default branch name
-			defaultBranch, err := m.getDefaultBranch(repoPath)
-			if err != nil {
-				defaultBranch = "main" // Fallback to main
-			}
-
-			// Pull updates from the default branch
-			cmd = exec.Command("git", "pull", "origin", defaultBranch)
-			cmd.Dir = repoPath
-			output, err = cmd.CombinedOutput()
-			if err != nil {
-				m.Output.StopStage()
-				return "", fmt.Errorf("failed to update repository: %s", output)
-			}
-			m.Output.AddOutput(string(output))
+			// No need to pull, as we'll switch to the appropriate tag later
+			return repoPath, nil
 		}
 
-		m.Output.CompleteStage()
+		// We're on a branch, check for updates
+		hasUpdates, err := gitOps.HasEdgeUpdates()
+		if err != nil {
+			return "", fmt.Errorf("failed to check for updates: %w", err)
+		}
+
+		if hasUpdates {
+			if err := gitOps.UpdateRepo(true); err != nil {
+				return "", fmt.Errorf("failed to update repository: %w", err)
+			}
+		}
+
 		return repoPath, nil
 	}
 
 	// Repository doesn't exist, clone it
-	m.Output.StartStage("Cloning repository")
-	cmd := exec.Command("git", "clone", repoURL, repoPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		m.Output.StopStage()
-		return "", fmt.Errorf("failed to clone repository: %s", output)
+	if err := gitOps.Clone(repoURL); err != nil {
+		return "", err
 	}
-	m.Output.AddOutput(string(output))
-	m.Output.CompleteStage()
 
 	return repoPath, nil
 }
 
-// GetLatestTag returns the latest tag from the repository
-func (m *Manager) GetLatestTag(repoPath string) (string, error) {
-	cmd := exec.Command("git", "describe", "--tags", "--abbrev=0")
-	cmd.Dir = repoPath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", nil // No tags available
-	}
-	m.Output.AddOutput(string(output))
-	return strings.TrimSpace(string(output)), nil
-}
-
-// CheckoutTag checks out a specific tag
-func (m *Manager) CheckoutTag(repoPath, tag string) error {
-	cmd := exec.Command("git", "checkout", tag)
-	cmd.Dir = repoPath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to checkout tag: %s", output)
-	}
-	m.Output.AddOutput(string(output))
-	return nil
-}
-
 // UpdatePackage updates a specific tool
 func (m *Manager) UpdatePackage(repo Repository) error {
-	// Clone or update the repository
-	repoPath, err := m.CloneOrUpdate(repo.URL, repo.Name)
-	if err != nil {
-		return fmt.Errorf("failed to update repository: %w", err)
+	// Start spinner only if not in verbose mode and not already running
+	if !m.Output.IsVerbose() && !m.Output.IsSpinnerRunning() {
+		m.Output.StartStage("Checking for updates...")
 	}
 
-	if !repo.UseEdge {
-		// Get latest tag if available and not in edge mode
-		tag, err := m.GetLatestTag(repoPath)
-		if err == nil && tag != "" {
-			if err := m.CheckoutTag(repoPath, tag); err != nil {
-				return fmt.Errorf("failed to checkout tag: %w", err)
+	// Get the repository path
+	repoPath := filepath.Join(m.workDir, repo.Name)
+	gitOps := NewGitOps(repoPath, m.Output)
+
+	// Check if repository exists
+	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+		return &ManagerError{
+			Op:  "update",
+			Err: fmt.Errorf("repository not found at %s", repoPath),
+		}
+	}
+
+	// Get current state
+	currentRef, err := m.GetRepoState(repoPath)
+	if err != nil {
+		return &ManagerError{
+			Op:  "update",
+			Err: fmt.Errorf("failed to get current state: %w", err),
+		}
+	}
+
+	// Update repository based on update train
+	m.Output.StartStage("Updating repository...")
+	if err := gitOps.UpdateRepo(repo.UseEdge); err != nil {
+		m.Output.StopStage()
+		return &ManagerError{
+			Op:  "update",
+			Err: fmt.Errorf("failed to update repository: %w", err),
+		}
+	}
+
+	// Get new state
+	newRef, err := m.GetRepoState(repoPath)
+	if err != nil {
+		return &ManagerError{
+			Op:  "update",
+			Err: fmt.Errorf("failed to get new state: %w", err),
+		}
+	}
+
+	// If refs are different, we need to rebuild
+	if currentRef != newRef {
+		if repo.UseEdge {
+			m.Output.PrintStatus(fmt.Sprintf("Repository updated to latest commit: %s", newRef))
+		} else {
+			// For release mode, verify we're on a tag
+			tag, err := gitOps.GetCurrentTag()
+			if err != nil {
+				return &ManagerError{
+					Op:  "update",
+					Err: fmt.Errorf("failed to get current tag: %w", err),
+				}
+			}
+			m.Output.PrintStatus(fmt.Sprintf("Repository updated to tag: %s", tag))
+		}
+
+		if !repo.SkipBuild {
+			m.Output.StartStage(fmt.Sprintf("Building %s...", repo.Name))
+			if err := m.buildTool(repo); err != nil {
+				m.Output.StopStage()
+				return &ManagerError{
+					Op:  "build",
+					Err: fmt.Errorf("failed to build tool: %w", err),
+				}
+			}
+			m.Output.PrintStatus("Build completed")
+		}
+	} else {
+		m.Output.StopStage()
+		m.Output.PrintInfo(fmt.Sprintf("Tool '%s' is already up to date!", repo.Name))
+	}
+
+	// Create or update alias for the tool
+	if repo.Executable != "" {
+		m.Output.StartStage("Updating alias...")
+		execPath := filepath.Join(repoPath, repo.Executable)
+		if err := m.load.AddAlias(repo.Name, execPath); err != nil {
+			m.Output.StopStage()
+			return &ManagerError{
+				Op:  "alias",
+				Err: fmt.Errorf("failed to create alias: %w", err),
 			}
 		}
+		m.Output.PrintStatus("Updated alias")
 	}
 
-	// Only run build if a build command is specified and not skipped
-	if repo.Build != "" && !repo.SkipBuild {
-		m.Output.StartStage("Building")
-		cmd := exec.Command("bash", "-c", repo.Build)
-		cmd.Dir = repoPath
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			m.Output.StopStage()
-			return fmt.Errorf("build failed: %s", output)
-		}
-		m.Output.AddOutput(string(output))
-		m.Output.CompleteStage()
-	}
-
-	// Handle load command if specified
-	if repo.Load != "" {
-		// Replace template variables
-		loadCmd := repo.Load
-		loadCmd = strings.ReplaceAll(loadCmd, "{{ .getgit.root }}", m.workDir)
-
-		// Create or update .getgit file
-		var collection []string
-		if repo.UseEdge {
-			collection = []string{"edge"}
-		}
-
-		if err := getgitfile.WriteToRepo(repoPath, repo.SourceName,
-			map[bool]string{true: "edge", false: "release"}[repo.UseEdge],
-			collection,
-			loadCmd); err != nil {
-			return fmt.Errorf("failed to write .getgit file: %w", err)
-		}
-
-		// Add source line to .alias file
-		getgitFile := filepath.Join(repoPath, getgitfile.GetGitFileName)
-		if err := m.aliases.AddSource(repo.Name, getgitFile); err != nil {
-			return fmt.Errorf("failed to add source to .alias file: %w", err)
-		}
-	}
-
-	// Create alias for the executable only if an executable is specified
-	if repo.Executable != "" {
-		execPath := filepath.Join(repoPath, repo.Executable)
-		if err := m.aliases.AddAlias(repo.Name, execPath); err != nil {
-			return fmt.Errorf("failed to create alias: %w", err)
+	// Add source command if tool has a .getgit file
+	getgitPath := m.Getgit.GetFilePath(repo.Name)
+	if err := m.load.AddSource(repo.Name, getgitPath); err != nil {
+		return &ManagerError{
+			Op:  "source",
+			Err: fmt.Errorf("failed to add source command: %w", err),
 		}
 	}
 
@@ -326,83 +371,222 @@ type Repository struct {
 
 // FetchUpdates fetches updates from the remote repository
 func (m *Manager) FetchUpdates(repoPath string) error {
-	m.Output.StartStage("Fetching updates")
-	cmd := exec.Command("git", "fetch", "--tags", "origin")
-	cmd.Dir = repoPath
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		m.Output.StopStage()
-		return fmt.Errorf("failed to fetch updates: %s", output)
-	}
-	m.Output.AddOutput(string(output))
-	m.Output.CompleteStage()
-	return nil
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.FetchUpdates()
 }
 
-// HasEdgeUpdates checks if there are new commits in the remote repository
-func (m *Manager) HasEdgeUpdates(repoPath string) (bool, error) {
-	// Get the default branch name
-	defaultBranch, err := m.getDefaultBranch(repoPath)
-	if err != nil {
-		return false, fmt.Errorf("failed to get default branch: %w", err)
-	}
-
-	// Get current and remote HEADs
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = repoPath
-	localHead, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("failed to get local HEAD: %s", localHead)
-	}
-
-	cmd = exec.Command("git", "rev-parse", fmt.Sprintf("origin/%s", defaultBranch))
-	cmd.Dir = repoPath
-	remoteHead, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("failed to get remote HEAD: %s", remoteHead)
-	}
-
-	return strings.TrimSpace(string(localHead)) != strings.TrimSpace(string(remoteHead)), nil
+// GetRepoState gets the current state of the repository (tag or commit hash)
+func (m *Manager) GetRepoState(repoPath string) (string, error) {
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.GetCurrentRef()
 }
 
-// GetCurrentTag gets the current tag of the repository
-func (m *Manager) GetCurrentTag(repoPath string) (string, error) {
-	cmd := exec.Command("git", "describe", "--tags", "--exact-match")
-	cmd.Dir = repoPath
-	output, err := cmd.CombinedOutput()
+// GetTagInfo gets information about tags in the repository
+func (m *Manager) GetTagInfo(repoPath string) (hasTags bool, currentTag string, err error) {
+	gitOps := NewGitOps(repoPath, m.Output)
+
+	// Check for tags
+	hasTags, err = gitOps.HasTags()
 	if err != nil {
-		// No tag on current commit is not an error
-		return "", nil
+		return false, "", &ManagerError{
+			Op:  "tags",
+			Err: fmt.Errorf("failed to list tags: %w", err),
+		}
 	}
-	return strings.TrimSpace(string(output)), nil
+
+	// Get current tag if any
+	if hasTags {
+		currentTag, err = gitOps.GetCurrentTag()
+		if err != nil {
+			// Not on a tag, that's okay
+			currentTag = ""
+		}
+	}
+
+	return hasTags, currentTag, nil
 }
 
 // IsTagNewer checks if newTag is newer than currentTag
 func (m *Manager) IsTagNewer(repoPath, currentTag, newTag string) (bool, error) {
-	// Get commit timestamps for both tags
-	getTimestamp := func(tag string) (int64, error) {
-		cmd := exec.Command("git", "log", "-1", "--format=%ct", tag)
-		cmd.Dir = repoPath
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return 0, fmt.Errorf("failed to get timestamp for tag %s: %s", tag, output)
-		}
-		timestamp, err := strconv.ParseInt(strings.TrimSpace(string(output)), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("failed to parse timestamp for tag %s: %w", tag, err)
-		}
-		return timestamp, nil
-	}
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.IsTagNewer(currentTag, newTag)
+}
 
-	currentTime, err := getTimestamp(currentTag)
+// Update the HasTags method to use GitOps directly
+func (m *Manager) HasTags(repoPath string) (bool, error) {
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.HasTags()
+}
+
+func (o *OutputManager) IsSpinnerRunning() bool {
+	return o.spinner != nil && o.spinner.Active()
+}
+
+// buildTool builds the tool using the specified build command
+func (m *Manager) buildTool(repo Repository) error {
+	cmd := exec.Command("bash", "-c", repo.Build)
+	cmd.Dir = filepath.Join(m.workDir, repo.Name)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return false, err
+		m.Output.StopStage()
+		return fmt.Errorf("build failed: %s", output)
 	}
+	m.Output.AddOutput(string(output))
+	return nil
+}
 
-	newTime, err := getTimestamp(newTag)
+// GetUpdateTrain determines which update train to use based on flags and existing .getgit file
+func (m *Manager) GetUpdateTrain(getgitFile *getgitfile.GetGitFile, toolName string, useEdge, useRelease bool) (string, bool) {
+	return m.Getgit.GetUpdateTrain(toolName, useEdge, useRelease)
+}
+
+// IsToolInstalled checks if a tool is already installed
+func (m *Manager) IsToolInstalled(toolName string) (bool, error) {
+	repoPath := filepath.Join(m.workDir, toolName)
+	_, err := os.Stat(repoPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
 	if err != nil {
-		return false, err
+		return false, &ManagerError{
+			Op:  "check",
+			Err: fmt.Errorf("failed to check tool installation: %w", err),
+		}
+	}
+	return true, nil
+}
+
+// GetToolConfig gets the configuration for a tool
+func (m *Manager) GetToolConfig(toolName string) (*getgitfile.GetGitFile, error) {
+	return m.Getgit.ReadConfig(toolName)
+}
+
+// WriteToolConfig writes the configuration for a tool
+func (m *Manager) WriteToolConfig(toolName, sourceName, updateTrain, loadCommand string) error {
+	return m.Getgit.WriteConfig(toolName, sourceName, updateTrain, loadCommand)
+}
+
+// RepoStatus represents the current status of a repository
+type RepoStatus struct {
+	sources.RepoInfo
+	Installed   bool
+	UpdateTrain string
+	InstallPath string
+}
+
+// GetRepoStatus returns the current status of a repository
+func (rm *Manager) GetRepoStatus(repo sources.RepoInfo) RepoStatus {
+	status := RepoStatus{
+		RepoInfo: repo,
 	}
 
-	return newTime > currentTime, nil
+	// Check if tool is installed
+	repoPath := filepath.Join(rm.workDir, repo.Name)
+	if _, err := os.Stat(repoPath); err == nil {
+		status.Installed = true
+		status.InstallPath = repoPath
+
+		// Check for .getgit file
+		if getgitFile, err := getgitfile.ReadFromRepo(repoPath); err == nil && getgitFile != nil {
+			status.UpdateTrain = getgitFile.UpdateTrain
+		} else {
+			status.UpdateTrain = "release" // Default to release if no .getgit file
+		}
+	}
+
+	return status
+}
+
+// PrintRepoInfo prints repository information to the given writer
+func (rm *Manager) PrintRepoInfo(w *tabwriter.Writer, repo RepoStatus, verbose, veryVerbose bool) {
+	// Helper function to format multi-line values
+	formatMultiLine := func(value string) string {
+		if strings.Contains(value, "\n") {
+			lines := strings.Split(strings.TrimSpace(value), "\n")
+			// First line goes after the tab, subsequent lines are indented
+			for i := range lines {
+				lines[i] = strings.TrimSpace(lines[i])
+			}
+			return lines[0] + "\n\t" + strings.Join(lines[1:], "\n\t")
+		}
+		return strings.TrimSpace(value)
+	}
+
+	// Basic info always shown
+	fmt.Fprintf(w, "name:\t%s\n", repo.Name)
+	fmt.Fprintf(w, "repository url:\t%s\n", repo.URL)
+	if repo.Installed {
+		fmt.Fprintf(w, "status:\t%sinstalled%s\n", colorGreen, colorReset)
+	} else {
+		fmt.Fprintf(w, "status:\tnot installed\n")
+	}
+
+	// Additional info with -v
+	if verbose || veryVerbose {
+		if repo.Installed {
+			if repo.UpdateTrain == "edge" {
+				fmt.Fprintf(w, "update train:\t%sedge%s\n", colorOrange, colorReset)
+			} else {
+				fmt.Fprintf(w, "update train:\t%s\n", repo.UpdateTrain)
+			}
+		}
+		fmt.Fprintf(w, "source name:\t%s\n", repo.SourceName)
+	}
+
+	// Full info with -V
+	if veryVerbose {
+		if repo.Build != "" {
+			fmt.Fprintf(w, "build command:\t%s\n", formatMultiLine(repo.Build))
+		}
+		if repo.Executable != "" {
+			fmt.Fprintf(w, "executable:\t%s\n", formatMultiLine(repo.Executable))
+		}
+		fmt.Fprintf(w, "source file:\t%s\n", repo.SourceFile)
+		if repo.Installed {
+			fmt.Fprintf(w, "install path:\t%s\n", formatMultiLine(repo.InstallPath))
+		}
+		if repo.Load != "" {
+			fmt.Fprintf(w, "load command:\t%s\n", formatMultiLine(repo.Load))
+		}
+	}
+}
+
+// GetUniqueRepos returns a map of unique repositories based on installation status
+func (rm *Manager) GetUniqueRepos(repos []sources.RepoInfo, installedOnly bool) map[string]RepoStatus {
+	uniqueTools := make(map[string]RepoStatus)
+
+	for _, repo := range repos {
+		status := rm.GetRepoStatus(repo)
+
+		// If tool is installed and there's a conflict
+		if status.Installed {
+			if existing, exists := uniqueTools[repo.Name]; exists {
+				// Check .getgit file to determine which one is actually installed
+				repoPath := filepath.Join(rm.workDir, repo.Name)
+				if getgitFile, err := getgitfile.ReadFromRepo(repoPath); err == nil && getgitFile != nil {
+					// If .getgit file exists, use the source specified in it
+					if getgitFile.SourceName == repo.SourceName {
+						uniqueTools[repo.Name] = status
+					} else if getgitFile.SourceName == existing.SourceName {
+						// Keep existing if it matches .getgit file
+						continue
+					}
+				}
+			} else {
+				uniqueTools[repo.Name] = status
+			}
+		} else if !installedOnly {
+			// For non-installed tools, only add if not showing installed only
+			if _, exists := uniqueTools[repo.Name]; !exists {
+				uniqueTools[repo.Name] = status
+			}
+		}
+	}
+
+	return uniqueTools
+}
+
+// Close closes the repository manager and cleans up resources
+func (rm *Manager) Close() error {
+	return nil // No cleanup needed at the moment
 }

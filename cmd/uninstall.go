@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/traberph/getgit/pkg/config"
-	"github.com/traberph/getgit/pkg/index"
 	"github.com/traberph/getgit/pkg/repository"
+	"github.com/traberph/getgit/pkg/shell"
 )
 
 var uninstallCmd = &cobra.Command{
@@ -35,57 +35,28 @@ Example:
 		if err != nil {
 			return fmt.Errorf("failed to create repository manager: %w", err)
 		}
+		defer rm.Close()
 
 		// Check if tool is installed
-		toolPath := filepath.Join(workDir, toolName)
-		if _, err := os.Stat(toolPath); os.IsNotExist(err) {
+		isInstalled, err := rm.IsToolInstalled(toolName)
+		if err != nil {
+			return fmt.Errorf("failed to check if tool is installed: %w", err)
+		}
+		if !isInstalled {
 			return fmt.Errorf("tool '%s' is not installed", toolName)
 		}
 
 		rm.Output.PrintInfo(fmt.Sprintf("Starting uninstallation of '%s'...\n", toolName))
 
-		// Create alias manager to remove the alias
-		aliasManager, err := repository.NewAliasManager()
-		if err != nil {
-			return fmt.Errorf("failed to initialize alias manager: %w", err)
-		}
-
-		// Check if there was an alias or source before removing
-		aliasRemoved := false
-		sourceRemoved := false
-		for name := range aliasManager.GetAliases() {
-			if name == toolName {
-				aliasRemoved = true
-				break
-			}
-		}
-		for name := range aliasManager.GetSources() {
-			if name == toolName {
-				sourceRemoved = true
-				break
-			}
-		}
-
 		// Remove the tool's directory
+		toolPath := filepath.Join(workDir, toolName)
 		if err := os.RemoveAll(toolPath); err != nil {
 			return fmt.Errorf("failed to remove tool directory: %w", err)
 		}
-		rm.Output.PrintStatus("Removed tool directory")
-
-		// Remove the alias and source
-		if err := aliasManager.RemoveAlias(toolName); err != nil {
-			return fmt.Errorf("failed to remove alias: %w", err)
-		}
-
-		if aliasRemoved {
-			rm.Output.PrintStatus("Removed alias")
-		}
-		if sourceRemoved {
-			rm.Output.PrintStatus("Removed source line from .alias file")
-		}
+		rm.Output.PrintStatus(fmt.Sprintf("Removed '%s' directory", toolName))
 
 		// Update completion script
-		if err := updateCompletionScript(); err != nil {
+		if err := shell.UpdateCompletionScript(cmd); err != nil {
 			rm.Output.PrintError(fmt.Sprintf("Warning: Failed to update completion script: %v", err))
 		}
 
@@ -101,36 +72,37 @@ func init() {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
-		// Create a new index manager
-		indexManager, err := index.NewManager()
-		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
-		}
-		defer indexManager.Close()
-
-		// Get all available tools
-		repos, err := indexManager.ListRepositories()
-		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
-		}
-
 		// Get work directory for checking installed tools
 		workDir, err := config.GetWorkDir()
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveError
 		}
 
-		// Build list of installed tools
-		var suggestions []string
-		for _, repo := range repos {
-			// Check if tool is installed
-			toolPath := filepath.Join(workDir, repo.Name)
-			if _, err := os.Stat(toolPath); err == nil {
-				suggestions = append(suggestions, repo.Name)
+		// Create repository manager to list installed tools
+		rm, err := repository.NewManager(workDir, false)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		defer rm.Close()
+
+		// Get list of installed tools by reading the work directory
+		entries, err := os.ReadDir(workDir)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+
+		var tools []string
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == ".git" {
+				continue
+			}
+			toolPath := filepath.Join(workDir, entry.Name())
+			if _, err := os.Stat(filepath.Join(toolPath, ".git")); err == nil {
+				tools = append(tools, entry.Name())
 			}
 		}
 
-		return suggestions, cobra.ShellCompDirectiveNoFileComp
+		return tools, cobra.ShellCompDirectiveNoFileComp
 	}
 
 	rootCmd.AddCommand(uninstallCmd)

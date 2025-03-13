@@ -10,20 +10,56 @@ import (
 )
 
 const (
+	// GetGitFileName is the name of the metadata file in repositories
 	GetGitFileName = ".getgit"
-	heredocStart   = ": <<'EOF'"
-	heredocEnd     = "EOF"
+	// heredocStart is the marker for the start of a heredoc section
+	heredocStart = ": <<'EOF'"
+	// heredocEnd is the marker for the end of a heredoc section
+	heredocEnd = "EOF"
+
+	// UpdateTrainRelease represents the stable release update train
+	UpdateTrainRelease = "release"
+	// UpdateTrainEdge represents the bleeding edge update train
+	UpdateTrainEdge = "edge"
 )
+
+// GetGitFileError represents an error that occurred while processing a .getgit file
+type GetGitFileError struct {
+	Op  string
+	Err error
+}
+
+func (e *GetGitFileError) Error() string {
+	return fmt.Sprintf("getgit file error: %s: %v", e.Op, e.Err)
+}
 
 // GetGitFile represents the contents of a .getgit file
 type GetGitFile struct {
-	SourceName  string   `yaml:"sourcefile"` // Name of the source file that installed this tool
-	UpdateTrain string   `yaml:"updates"`    // "release" or "edge"
-	Collection  []string `yaml:"collection"` // List of collections this tool belongs to
-	LoadCommand string   `yaml:"-"`          // Load command to be executed (not part of YAML)
+	SourceName  string `yaml:"sourcefile"` // Name of the source file that installed this tool
+	UpdateTrain string `yaml:"updates"`    // "release" or "edge"
+	Load        string `yaml:"load"`       // Shell commands to be executed
 }
 
-// ReadFromRepo reads the .getgit file from a repository directory
+// Validate checks if the GetGitFile is valid
+func (g *GetGitFile) Validate() error {
+	if g.SourceName == "" {
+		return &GetGitFileError{
+			Op:  "validate",
+			Err: fmt.Errorf("source name is empty"),
+		}
+	}
+	if g.UpdateTrain != UpdateTrainRelease && g.UpdateTrain != UpdateTrainEdge {
+		return &GetGitFileError{
+			Op:  "validate",
+			Err: fmt.Errorf("invalid update train: %s", g.UpdateTrain),
+		}
+	}
+	return nil
+}
+
+// ReadFromRepo reads the .getgit file from a repository directory.
+// It returns a GetGitFile struct containing the parsed contents and any error encountered.
+// If the file doesn't exist, it returns nil, nil.
 func ReadFromRepo(repoPath string) (*GetGitFile, error) {
 	filePath := filepath.Join(repoPath, GetGitFileName)
 
@@ -32,7 +68,10 @@ func ReadFromRepo(repoPath string) (*GetGitFile, error) {
 		if os.IsNotExist(err) {
 			return nil, nil // No .getgit file exists
 		}
-		return nil, fmt.Errorf("failed to read .getgit file: %w", err)
+		return nil, &GetGitFileError{
+			Op:  "read",
+			Err: fmt.Errorf("failed to read .getgit file: %w", err),
+		}
 	}
 
 	// Split content into lines
@@ -62,44 +101,51 @@ func ReadFromRepo(repoPath string) (*GetGitFile, error) {
 	var getgitFile GetGitFile
 	if len(yamlContent) > 0 {
 		if err := yaml.Unmarshal([]byte(strings.Join(yamlContent, "\n")), &getgitFile); err != nil {
-			return nil, fmt.Errorf("invalid .getgit file YAML format: %w", err)
+			return nil, &GetGitFileError{
+				Op:  "parse",
+				Err: fmt.Errorf("invalid .getgit file YAML format: %w", err),
+			}
 		}
 	}
 
-	if getgitFile.SourceName == "" {
-		return nil, fmt.Errorf("invalid .getgit file: source name is empty")
-	}
-
-	// Validate update train
-	if getgitFile.UpdateTrain != "release" && getgitFile.UpdateTrain != "edge" {
-		getgitFile.UpdateTrain = "release" // Default to release if not specified
+	if err := getgitFile.Validate(); err != nil {
+		return nil, err
 	}
 
 	// Store load commands
-	getgitFile.LoadCommand = strings.Join(loadCommands, "\n")
+	getgitFile.Load = strings.Join(loadCommands, "\n")
 
 	return &getgitFile, nil
 }
 
-// WriteToRepo writes the .getgit file to a repository directory
-func WriteToRepo(repoPath string, sourceName string, updateTrain string, collection []string, loadCommand string) error {
+// WriteToRepo writes the .getgit file to a repository directory.
+// It takes the repository path, source name, update train, and load command as parameters.
+// The update train must be either "release" or "edge", defaulting to "release" if invalid.
+func WriteToRepo(repoPath string, sourceName string, updateTrain string, loadCommand string) error {
 	filePath := filepath.Join(repoPath, GetGitFileName)
 
 	// Validate update train
-	if updateTrain != "release" && updateTrain != "edge" {
-		updateTrain = "release" // Default to release if invalid
+	if updateTrain != UpdateTrainRelease && updateTrain != UpdateTrainEdge {
+		updateTrain = UpdateTrainRelease // Default to release if invalid
 	}
 
 	getgitFile := GetGitFile{
 		SourceName:  sourceName,
 		UpdateTrain: updateTrain,
-		Collection:  collection,
+		Load:        loadCommand,
+	}
+
+	if err := getgitFile.Validate(); err != nil {
+		return err
 	}
 
 	// Marshal the YAML content
 	yamlContent, err := yaml.Marshal(getgitFile)
 	if err != nil {
-		return fmt.Errorf("failed to marshal .getgit file YAML: %w", err)
+		return &GetGitFileError{
+			Op:  "marshal",
+			Err: fmt.Errorf("failed to marshal .getgit file YAML: %w", err),
+		}
 	}
 
 	// Build the complete file content
@@ -112,7 +158,10 @@ func WriteToRepo(repoPath string, sourceName string, updateTrain string, collect
 
 	// Write the file with execute permissions
 	if err := os.WriteFile(filePath, []byte(content.String()), 0755); err != nil {
-		return fmt.Errorf("failed to write .getgit file: %w", err)
+		return &GetGitFileError{
+			Op:  "write",
+			Err: fmt.Errorf("failed to write .getgit file: %w", err),
+		}
 	}
 
 	return nil

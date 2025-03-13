@@ -51,6 +51,7 @@ Installs a tool from a Git repository.
 Usage: `getgit install <tool>`
 
 Clones the repository and sets up the tool according to its configuration. If a tool exists in multiple sources, prompts for selection.
+The install command can also be used to change between --release and --edge
 
 Flags:
 - `--release, -r`: Install the latest tagged release (default)

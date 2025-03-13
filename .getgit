@@ -1,0 +1,9 @@
+#!/bin/bash
+
+: <<'EOF'
+sourcefile: default
+updates: edge
+EOF
+
+
+
