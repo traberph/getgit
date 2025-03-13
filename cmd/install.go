@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	edge    bool
 	release bool
+	edge    bool // Use edge update train
 )
 
 // promptSourceSelection prompts the user to select a source from multiple matches
@@ -78,7 +78,7 @@ func installTool(sm *sources.SourceManager, toolName string, cmd *cobra.Command)
 	}
 
 	if isExistingInstall {
-		getgitFile, err = rm.Getgit.ReadConfig(toolName)
+		getgitFile, err = rm.Getgit.Read(toolName)
 		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to read tool configuration: %w", err)
 		}
@@ -280,7 +280,8 @@ Flags:
 }
 
 func init() {
-	installCmd.Flags().BoolVarP(&edge, "edge", "e", false, "Install from edge branch instead of latest release")
+	installCmd.Flags().BoolVarP(&release, "release", "r", false, "Install the latest tagged release")
+	installCmd.Flags().BoolVarP(&edge, "edge", "e", false, "Use edge update train")
 
 	// Add completion support
 	installCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

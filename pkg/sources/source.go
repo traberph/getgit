@@ -174,7 +174,7 @@ func (sm *SourceManager) LoadSources() error {
 			}
 
 			var source Source
-			if err := yaml.Unmarshal(data, &source); err != nil {
+			if err := yaml.Unmarshal(data, &source.data); err != nil {
 				return fmt.Errorf("error parsing source file %s: %w", entry.Name(), err)
 			}
 			source.filePath = sourcePath
@@ -197,10 +197,10 @@ func (sm *SourceManager) FindRepo(name string) []RepoMatch {
 	return matches
 }
 
-// ValidatePermissions checks if the repository's URL and build command are allowed
-func (s *Source) ValidatePermissions(repo Repository) error {
-	// Check URL permissions
-	// If no origins are specified in permissions, allow GitHub URLs by default
+// isURLAllowed checks if a URL is allowed based on the source's permissions
+// GitHub URLs are allowed by default if no origin restrictions are specified
+func (s *Source) isURLAllowed(url string) bool {
+	// Check if there are any origin restrictions
 	hasOriginRestrictions := false
 	for _, perm := range s.data.Permissions {
 		if len(perm.Origins) > 0 {
@@ -209,23 +209,32 @@ func (s *Source) ValidatePermissions(repo Repository) error {
 		}
 	}
 
-	urlAllowed := !hasOriginRestrictions // Allow if no restrictions
-	if hasOriginRestrictions {
-		// Check custom origins
-		for _, perm := range s.data.Permissions {
-			for _, origin := range perm.Origins {
-				if strings.Contains(repo.URL, origin) {
-					urlAllowed = true
-					break
-				}
-			}
-			if urlAllowed {
-				break
+	// If no origin restrictions, GitHub URLs are allowed by default
+	if !hasOriginRestrictions && strings.HasPrefix(url, "https://github.com/") {
+		return true
+	}
+
+	// Check if the URL matches any of the allowed origins
+	for _, perm := range s.data.Permissions {
+		// If no origins are specified in this permission, all are allowed
+		if len(perm.Origins) == 0 {
+			return true
+		}
+
+		for _, origin := range perm.Origins {
+			if strings.HasPrefix(url, origin) {
+				return true
 			}
 		}
 	}
 
-	if !urlAllowed {
+	return false
+}
+
+// ValidatePermissions checks if the repository's URL and build command are allowed
+func (s *Source) ValidatePermissions(repo Repository) error {
+	// Check URL permissions using the helper method
+	if !s.isURLAllowed(repo.URL) {
 		return fmt.Errorf("URL '%s' is not allowed in source %s - add its domain to the permissions.origins list", repo.URL, s.data.Name)
 	}
 
@@ -353,7 +362,7 @@ func ValidateSourceChanges(oldSource, newSource SourceInterface) (bool, SourceCh
 // UpdateSource fetches and checks for changes in a source file
 func (sm *SourceManager) UpdateSource(source SourceInterface) (bool, SourceChanges, error) {
 	// Fetch new content
-	newContent, err := FetchSource(source.GetName())
+	newContent, err := FetchSource(source.GetOrigin())
 	if err != nil {
 		return false, SourceChanges{}, fmt.Errorf("failed to fetch source: %w", err)
 	}
@@ -403,17 +412,11 @@ func (sm *SourceManager) ApplySourceUpdate(source *Source) error {
 
 // ValidateURLHost checks if the given URL's host is allowed by the source's permissions
 func (s *Source) ValidateURLHost(url string) error {
-	// If no origins are specified in permissions, all are allowed
-	for _, perm := range s.data.Permissions {
-		if len(perm.Origins) == 0 {
-			return nil
-		}
-		for _, origin := range perm.Origins {
-			if strings.HasPrefix(url, origin) {
-				return nil
-			}
-		}
+	// Use the helper method to check if the URL is allowed
+	if s.isURLAllowed(url) {
+		return nil
 	}
+
 	return fmt.Errorf("URL host not allowed by source permissions")
 }
 

@@ -62,15 +62,6 @@ func GetCacheDir() (string, error) {
 	return filepath.Join(cacheHome, ConfigDirName), nil
 }
 
-// GetAliasFile returns the path to the alias file
-func GetAliasFile() (string, error) {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return "", fmt.Errorf("failed to load config: %w", err)
-	}
-	return filepath.Join(cfg.Root, ".alias"), nil
-}
-
 // LoadConfig loads the configuration from the config file
 // If the config file doesn't exist, it creates a default one
 func LoadConfig() (*Config, error) {

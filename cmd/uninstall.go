@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/traberph/getgit/pkg/config"
+	load "github.com/traberph/getgit/pkg/loadfile"
 	"github.com/traberph/getgit/pkg/repository"
 	"github.com/traberph/getgit/pkg/shell"
 )
@@ -54,6 +55,16 @@ Example:
 			return fmt.Errorf("failed to remove tool directory: %w", err)
 		}
 		rm.Output.PrintStatus(fmt.Sprintf("Removed '%s' directory", toolName))
+
+		// Remove the tool's alias
+		lm, err := load.NewManager()
+		if err != nil {
+			return fmt.Errorf("failed to create load manager: %w", err)
+		}
+		if err := lm.RemoveTool(toolName); err != nil {
+			return fmt.Errorf("failed to remove tool from .load file: %w", err)
+		}
+		rm.Output.PrintStatus(fmt.Sprintf("Removed alias for '%s'", toolName))
 
 		// Update completion script
 		if err := shell.UpdateCompletionScript(cmd); err != nil {

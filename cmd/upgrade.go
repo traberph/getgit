@@ -13,6 +13,8 @@ import (
 	"github.com/traberph/getgit/pkg/sources"
 )
 
+var force bool // Force upgrade without confirmation
+
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade [tool]",
 	Short: "Upgrade installed tools",
@@ -64,8 +66,6 @@ Flags:
 
 func init() {
 	upgradeCmd.Flags().BoolVarP(&force, "force", "f", false, "Force upgrade without confirmation")
-	upgradeCmd.Flags().BoolVarP(&edge, "edge", "e", false, "Upgrade to the latest commit from the main branch")
-	upgradeCmd.Flags().BoolVarP(&skipBuild, "skip-build", "s", false, "Skip the build step after updating")
 	rootCmd.AddCommand(upgradeCmd)
 }
 
@@ -136,7 +136,7 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 	if getgitFile != nil {
 		// Find the match corresponding to the source in .getgit file
 		for _, match := range matches {
-			if match.Source.Name == getgitFile.SourceName {
+			if match.Source.GetName() == getgitFile.SourceName {
 				selectedMatch = &match
 				break
 			}
@@ -156,7 +156,7 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 
 		// Create .getgit file for future reference
 		updateTrain := "release"
-		if err := getgitfile.WriteToRepo(toolPath, selectedMatch.Source.Name, updateTrain, selectedMatch.Repo.Load); err != nil {
+		if err := getgitfile.WriteToRepo(toolPath, selectedMatch.Source.GetName(), updateTrain, selectedMatch.Repo.Load); err != nil {
 			return fmt.Errorf("failed to write .getgit file: %w", err)
 		}
 	}
@@ -186,7 +186,7 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 		Load:       selectedMatch.Repo.Load,
 		UseEdge:    useEdge,
 		SkipBuild:  skipBuild,
-		SourceName: selectedMatch.Source.Name,
+		SourceName: selectedMatch.Source.GetName(),
 	}); err != nil {
 		if strings.Contains(err.Error(), "build failed:") {
 			return fmt.Errorf("build failed for '%s': %w", toolName, err)
@@ -196,6 +196,11 @@ func upgradeSpecificTool(sm *sources.SourceManager, rm *repository.Manager, tool
 			return fmt.Errorf("failed to update configuration for '%s': %w", toolName, err)
 		}
 		return fmt.Errorf("failed to update '%s': %w", toolName, err)
+	}
+
+	// Update tool configuration
+	if err := rm.WriteToolConfig(toolName, selectedMatch.Source.GetName(), "release", selectedMatch.Repo.Load); err != nil {
+		return fmt.Errorf("failed to write tool configuration: %w", err)
 	}
 
 	return nil

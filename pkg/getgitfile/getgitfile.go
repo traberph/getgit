@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"gopkg.in/yaml.v3"
 )
@@ -118,6 +119,47 @@ func ReadFromRepo(repoPath string) (*GetGitFile, error) {
 	return &getgitFile, nil
 }
 
+// processTemplate processes template variables in a load command
+func processTemplate(loadCommand string, workDir string) (string, error) {
+	if !strings.Contains(loadCommand, "{{") {
+		return loadCommand, nil
+	}
+
+	// Replace lowercase template variables with uppercase ones for consistency
+	loadCommand = strings.ReplaceAll(loadCommand, "{{ .getgit.root }}", "{{ .GetGit.Root }}")
+	loadCommand = strings.ReplaceAll(loadCommand, "{{.getgit.root}}", "{{.GetGit.Root}}")
+
+	tmpl, err := template.New("load").Parse(loadCommand)
+	if err != nil {
+		return "", &GetGitFileError{
+			Op:  "template",
+			Err: fmt.Errorf("failed to parse load command template: %w", err),
+		}
+	}
+
+	data := struct {
+		GetGit struct {
+			Root string
+		}
+	}{
+		GetGit: struct {
+			Root string
+		}{
+			Root: workDir,
+		},
+	}
+
+	var processedCmd strings.Builder
+	if err := tmpl.Execute(&processedCmd, data); err != nil {
+		return "", &GetGitFileError{
+			Op:  "template",
+			Err: fmt.Errorf("failed to process load command template: %w", err),
+		}
+	}
+
+	return processedCmd.String(), nil
+}
+
 // WriteToRepo writes the .getgit file to a repository directory.
 // It takes the repository path, source name, update train, and load command as parameters.
 // The update train must be either "release" or "edge", defaulting to "release" if invalid.
@@ -148,13 +190,19 @@ func WriteToRepo(repoPath string, sourceName string, updateTrain string, loadCom
 		}
 	}
 
+	// Process template variables in the load command
+	processedLoadCommand, err := processTemplate(loadCommand, filepath.Dir(repoPath))
+	if err != nil {
+		return err
+	}
+
 	// Build the complete file content
 	var content strings.Builder
 	content.WriteString("#!/bin/bash\n\n")
 	content.WriteString(heredocStart + "\n")
 	content.Write(yamlContent)
 	content.WriteString(heredocEnd + "\n\n")
-	content.WriteString(loadCommand + "\n")
+	content.WriteString(processedLoadCommand + "\n")
 
 	// Write the file with execute permissions
 	if err := os.WriteFile(filePath, []byte(content.String()), 0755); err != nil {

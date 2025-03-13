@@ -13,7 +13,7 @@ import (
 	"github.com/briandowns/spinner"
 	"github.com/traberph/getgit/pkg/config"
 	"github.com/traberph/getgit/pkg/getgitfile"
-	"github.com/traberph/getgit/pkg/load"
+	"github.com/traberph/getgit/pkg/loadfile"
 	"github.com/traberph/getgit/pkg/sources"
 )
 
@@ -141,7 +141,7 @@ func (e *ManagerError) Error() string {
 type Manager struct {
 	workDir string
 	Output  *OutputManager
-	load    *load.LoadManager
+	Load    *loadfile.Manager
 	Getgit  *getgitfile.Manager // Expose getgitfile manager
 }
 
@@ -169,7 +169,7 @@ func NewManager(workDir string, verbose bool) (*Manager, error) {
 	}
 
 	// Create load manager
-	loadManager, err := load.NewLoadManager()
+	loadManager, err := loadfile.NewManager()
 	if err != nil {
 		return nil, &ManagerError{
 			Op:  "init",
@@ -178,11 +178,11 @@ func NewManager(workDir string, verbose bool) (*Manager, error) {
 	}
 
 	// Create getgitfile manager
-	getgitManager, err := getgitfile.NewManager(workDir)
-	if err != nil {
+	getgitManager := getgitfile.NewManager(workDir)
+	if getgitManager == nil {
 		return nil, &ManagerError{
 			Op:  "init",
-			Err: fmt.Errorf("failed to create getgitfile manager: %w", err),
+			Err: fmt.Errorf("failed to create getgitfile manager: invalid work directory"),
 		}
 	}
 
@@ -197,7 +197,7 @@ func NewManager(workDir string, verbose bool) (*Manager, error) {
 	return &Manager{
 		workDir: workDir,
 		Output:  NewOutputManager(verbose),
-		load:    loadManager,
+		Load:    loadManager,
 		Getgit:  getgitManager,
 	}, nil
 }
@@ -335,7 +335,7 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 	if repo.Executable != "" {
 		m.Output.StartStage("Updating alias...")
 		execPath := filepath.Join(repoPath, repo.Executable)
-		if err := m.load.AddAlias(repo.Name, execPath); err != nil {
+		if err := m.Load.AddAlias(repo.Name, execPath); err != nil {
 			m.Output.StopStage()
 			return &ManagerError{
 				Op:  "alias",
@@ -347,7 +347,7 @@ func (m *Manager) UpdatePackage(repo Repository) error {
 
 	// Add source command if tool has a .getgit file
 	getgitPath := m.Getgit.GetFilePath(repo.Name)
-	if err := m.load.AddSource(repo.Name, getgitPath); err != nil {
+	if err := m.Load.AddSource(repo.Name, getgitPath); err != nil {
 		return &ManagerError{
 			Op:  "source",
 			Err: fmt.Errorf("failed to add source command: %w", err),
@@ -458,12 +458,12 @@ func (m *Manager) IsToolInstalled(toolName string) (bool, error) {
 
 // GetToolConfig gets the configuration for a tool
 func (m *Manager) GetToolConfig(toolName string) (*getgitfile.GetGitFile, error) {
-	return m.Getgit.ReadConfig(toolName)
+	return m.Getgit.Read(toolName)
 }
 
 // WriteToolConfig writes the configuration for a tool
 func (m *Manager) WriteToolConfig(toolName, sourceName, updateTrain, loadCommand string) error {
-	return m.Getgit.WriteConfig(toolName, sourceName, updateTrain, loadCommand)
+	return m.Getgit.Write(toolName, sourceName, updateTrain, loadCommand)
 }
 
 // RepoStatus represents the current status of a repository
@@ -589,4 +589,22 @@ func (rm *Manager) GetUniqueRepos(repos []sources.RepoInfo, installedOnly bool) 
 // Close closes the repository manager and cleans up resources
 func (rm *Manager) Close() error {
 	return nil // No cleanup needed at the moment
+}
+
+// HasEdgeUpdates checks if there are updates available on the main branch
+func (m *Manager) HasEdgeUpdates(repoPath string) (bool, error) {
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.HasEdgeUpdates()
+}
+
+// GetCurrentTag gets the current tag of the repository
+func (m *Manager) GetCurrentTag(repoPath string) (string, error) {
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.GetCurrentTag()
+}
+
+// GetLatestTag gets the latest tag from the repository
+func (m *Manager) GetLatestTag(repoPath string) (string, error) {
+	gitOps := NewGitOps(repoPath, m.Output)
+	return gitOps.GetLatestTag()
 }

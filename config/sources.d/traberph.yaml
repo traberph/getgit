@@ -12,7 +12,7 @@ repos:
   - name: "nvm"
     url: "nvm-sh/nvm"
     load: |
-      export NVM_DIR="{{ .getgit.root }}/nvm"
+      export NVM_DIR="{{ .GetGit.Root }}/nvm"
       [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 
       [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
 

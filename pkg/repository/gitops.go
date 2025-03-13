@@ -2,7 +2,9 @@ package repository
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -27,7 +29,7 @@ func (g *GitOps) runCommand(args ...string) (string, error) {
 	cmd.Dir = g.repoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git command failed: %s", output)
+		return string(output), fmt.Errorf("git command failed: %w - %s", err, output)
 	}
 	return strings.TrimSpace(string(output)), nil
 }
@@ -98,11 +100,24 @@ func (g *GitOps) GetCurrentRef() (string, error) {
 
 // FetchUpdates fetches updates from the remote repository
 func (g *GitOps) FetchUpdates() error {
-	output, err := g.runCommand("fetch", "--tags", "origin")
-	if err != nil {
-		return fmt.Errorf("failed to fetch updates: %s", output)
+	// Make sure the repository directory exists
+	if _, err := os.Stat(g.repoPath); os.IsNotExist(err) {
+		return fmt.Errorf("repository directory does not exist: %s", g.repoPath)
 	}
-	g.output.AddOutput(output)
+
+	// Use absolute path for the repository directory
+	absPath, err := filepath.Abs(g.repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	cmd := exec.Command("git", "fetch", "--tags", "origin")
+	cmd.Dir = absPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to fetch updates: %w - %s", err, output)
+	}
+	g.output.AddOutput(string(output))
 	return nil
 }
 
@@ -211,11 +226,22 @@ func (g *GitOps) UpdateRepo(useEdge bool) error {
 
 // Clone clones a new repository
 func (g *GitOps) Clone(repoURL string) error {
-	output, err := g.runCommand("clone", repoURL, g.repoPath)
-	if err != nil {
-		return fmt.Errorf("failed to clone repository: %s", output)
+	// Create parent directory if it doesn't exist
+	parentDir := filepath.Dir(g.repoPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory: %w", err)
 	}
-	g.output.AddOutput(output)
+
+	// For clone, we need to run the command in the parent directory
+	// The last part of g.repoPath will be the directory name for the clone
+	repoName := filepath.Base(g.repoPath)
+	cmd := exec.Command("git", "clone", repoURL, repoName)
+	cmd.Dir = parentDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to clone repository: %w - %s", err, output)
+	}
+	g.output.AddOutput(string(output))
 	return nil
 }
 
